@@ -1,0 +1,21 @@
+{
+  "name": "mud-game",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/api"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@mud/api",
+    "typecheck": "npm run typecheck --workspace=@mud/api",
+    "test": "npm run test --workspace=@mud/api",
+    "dev": "npm run dev --workspace=@mud/api",
+    "check:boundaries": "node --test scripts/boundary-rules.test.mjs && node scripts/check-boundaries.mjs",
+    "format:check": "prettier --check \"apps/**/*.ts\" \"apps/**/*.json\" \"scripts/**/*.mjs\" package.json tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.0"
+  }
+}

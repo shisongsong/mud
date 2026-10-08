@@ -1,0 +1,24 @@
+{
+  "name": "@mud/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --experimental-strip-types src/main.ts",
+    "start": "node dist/main.js",
+    "db:migrate": "node --experimental-strip-types src/platform/database/migrate.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "compile:test": "tsc -p tsconfig.test.json",
+    "test": "npm run compile:test && node --test dist-test/app.test.js dist-test/contracts/contracts.test.js dist-test/kernel/kernel.test.js dist-test/modules/query/query.test.js dist-test/platform/database/database.test.js dist-test/platform/database/query-repository.test.js dist-test/platform/database/query-commands.test.js dist-test/platform/transactions/transactions.test.js"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "mssql": "^11.0.0",
+    "redis": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/mssql": "^12.3.0"
+  }
+}
