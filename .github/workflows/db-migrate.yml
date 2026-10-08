@@ -21,10 +21,6 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Export optional CA file
-        if: ${{ secrets.DATABASE_SSL_CA_FILE != '' }}
-        run: echo "DATABASE_SSL_CA_FILE=${{ secrets.DATABASE_SSL_CA_FILE }}" >> "$GITHUB_ENV"
-
       - name: Install dependencies
         run: npm ci
 
