@@ -47,7 +47,7 @@ interface VoteRow {
   readonly choice: QueryVote;
 }
 
-export class SqlServerQueryRepository implements QueryRepository {
+export class PostgresQueryRepository implements QueryRepository {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
   async create(query: QueryAggregate): Promise<void> {
@@ -62,10 +62,10 @@ export class SqlServerQueryRepository implements QueryRepository {
   ): Promise<void> {
     await transaction.query(
       `
-INSERT INTO [query].QueryRooms
-  (queryId, createdByPlayerId, gameplayReleaseId, phase, aggregateVersion,
-   createdAt, deadline, explorationStartedAt, scenarioVariantId, randomSeed,
-   correctChoice, selectedChoice)
+INSERT INTO "query"."QueryRooms"
+  ("queryId", "createdByPlayerId", "gameplayReleaseId", "phase", "aggregateVersion",
+   "createdAt", "deadline", "explorationStartedAt", "scenarioVariantId", "randomSeed",
+   "correctChoice", "selectedChoice")
 VALUES
   (@queryId, @createdByPlayerId, @gameplayReleaseId, @phase, @aggregateVersion,
    @createdAt, @deadline, @explorationStartedAt, @scenarioVariantId, @randomSeed,
@@ -88,11 +88,14 @@ VALUES
   ): Promise<QueryAggregate | null> {
     const rooms = await transaction.query<QueryRoomRow>(
       `
-SELECT queryId, createdByPlayerId, gameplayReleaseId, phase, aggregateVersion,
-       createdAt, deadline, explorationStartedAt, scenarioVariantId, randomSeed,
-       correctChoice, selectedChoice
-FROM [query].QueryRooms
-WHERE queryId = @queryId;
+SELECT "queryId" AS "queryId", "createdByPlayerId" AS "createdByPlayerId",
+       "gameplayReleaseId" AS "gameplayReleaseId", "phase" AS "phase",
+       "aggregateVersion" AS "aggregateVersion", "createdAt" AS "createdAt",
+       "deadline" AS "deadline", "explorationStartedAt" AS "explorationStartedAt",
+       "scenarioVariantId" AS "scenarioVariantId", "randomSeed" AS "randomSeed",
+       "correctChoice" AS "correctChoice", "selectedChoice" AS "selectedChoice"
+FROM "query"."QueryRooms"
+WHERE "queryId" = @queryId;
 `,
       { queryId },
     );
@@ -101,28 +104,29 @@ WHERE queryId = @queryId;
 
     const participants = await transaction.query<ParticipantRow>(
       `
-SELECT playerId, joinedAt
-FROM [query].QueryParticipants
-WHERE queryId = @queryId AND participationStatus = 'confirmed'
-ORDER BY joinedAt, playerId;
+SELECT "playerId" AS "playerId", "joinedAt" AS "joinedAt"
+FROM "query"."QueryParticipants"
+WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed'
+ORDER BY "joinedAt", "playerId";
 `,
       { queryId },
     );
     const actions = await transaction.query<ActionRow>(
       `
-SELECT playerId, siteId, cardId, evidenceText, isTruth, acceptedAt
-FROM [query].QueryActions
-WHERE queryId = @queryId
-ORDER BY playerId, actionOrdinal;
+SELECT "playerId" AS "playerId", "siteId" AS "siteId", "cardId" AS "cardId",
+       "evidenceText" AS "evidenceText", "isTruth" AS "isTruth", "acceptedAt" AS "acceptedAt"
+FROM "query"."QueryActions"
+WHERE "queryId" = @queryId
+ORDER BY "playerId", "actionOrdinal";
 `,
       { queryId },
     );
     const votes = await transaction.query<VoteRow>(
       `
-SELECT playerId, choice
-FROM [query].QueryVotes
-WHERE queryId = @queryId
-ORDER BY playerId;
+SELECT "playerId" AS "playerId", "choice" AS "choice"
+FROM "query"."QueryVotes"
+WHERE "queryId" = @queryId
+ORDER BY "playerId";
 `,
       { queryId },
     );
@@ -154,35 +158,35 @@ ORDER BY playerId;
 
     const updated = await transaction.query<{ readonly queryId: string }>(
       `
-UPDATE [query].QueryRooms
-SET createdByPlayerId = @createdByPlayerId,
-    gameplayReleaseId = @gameplayReleaseId,
-    phase = @phase,
-    aggregateVersion = @aggregateVersion,
-    createdAt = @createdAt,
-    deadline = @deadline,
-    explorationStartedAt = @explorationStartedAt,
-    scenarioVariantId = @scenarioVariantId,
-    randomSeed = @randomSeed,
-    correctChoice = @correctChoice,
-    selectedChoice = @selectedChoice
-OUTPUT inserted.queryId
-WHERE queryId = @queryId AND aggregateVersion = @expectedVersion;
+UPDATE "query"."QueryRooms"
+SET "createdByPlayerId" = @createdByPlayerId,
+    "gameplayReleaseId" = @gameplayReleaseId,
+    "phase" = @phase,
+    "aggregateVersion" = @aggregateVersion,
+    "createdAt" = @createdAt,
+    "deadline" = @deadline,
+    "explorationStartedAt" = @explorationStartedAt,
+    "scenarioVariantId" = @scenarioVariantId,
+    "randomSeed" = @randomSeed,
+    "correctChoice" = @correctChoice,
+    "selectedChoice" = @selectedChoice
+WHERE "queryId" = @queryId AND "aggregateVersion" = @expectedVersion
+RETURNING "queryId" AS "queryId";
 `,
       { ...roomParameters(query), expectedVersion },
     );
     if (updated.length === 0) return false;
 
     await transaction.query(
-      "DELETE FROM [query].QueryActions WHERE queryId = @queryId;",
+      'DELETE FROM "query"."QueryActions" WHERE "queryId" = @queryId;',
       { queryId: query.queryId },
     );
     await transaction.query(
-      "DELETE FROM [query].QueryVotes WHERE queryId = @queryId;",
+      'DELETE FROM "query"."QueryVotes" WHERE "queryId" = @queryId;',
       { queryId: query.queryId },
     );
     await transaction.query(
-      "DELETE FROM [query].QueryParticipants WHERE queryId = @queryId;",
+      'DELETE FROM "query"."QueryParticipants" WHERE "queryId" = @queryId;',
       { queryId: query.queryId },
     );
     await insertChildren(transaction, query);
@@ -219,7 +223,7 @@ async function insertChildren(
   for (const participant of query.participants) {
     await transaction.query(
       `
-INSERT INTO [query].QueryParticipants (queryId, playerId, joinedAt, participationStatus)
+INSERT INTO "query"."QueryParticipants" ("queryId", "playerId", "joinedAt", "participationStatus")
 VALUES (@queryId, @playerId, @joinedAt, 'confirmed');
 `,
       {
@@ -236,8 +240,8 @@ VALUES (@queryId, @playerId, @joinedAt, 'confirmed');
     actionOrdinals.set(action.playerId, actionOrdinal);
     await transaction.query(
       `
-INSERT INTO [query].QueryActions
-  (queryId, playerId, actionOrdinal, siteId, cardId, evidenceText, isTruth, acceptedAt)
+INSERT INTO "query"."QueryActions"
+  ("queryId", "playerId", "actionOrdinal", "siteId", "cardId", "evidenceText", "isTruth", "acceptedAt")
 VALUES
   (@queryId, @playerId, @actionOrdinal, @siteId, @cardId, @evidenceText, @isTruth, @acceptedAt);
 `,
@@ -257,8 +261,8 @@ VALUES
   for (const vote of query.votes) {
     await transaction.query(
       `
-INSERT INTO [query].QueryVotes (queryId, playerId, choice, updatedAt)
-VALUES (@queryId, @playerId, @choice, SYSUTCDATETIME());
+INSERT INTO "query"."QueryVotes" ("queryId", "playerId", "choice", "updatedAt")
+VALUES (@queryId, @playerId, @choice, CURRENT_TIMESTAMP);
 `,
       {
         queryId: query.queryId,

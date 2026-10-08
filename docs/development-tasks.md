@@ -8,7 +8,7 @@
 
 状态：Backlog → Ready → InProgress → Review → Done；歧义/权限/环境/依赖问题转Blocked。实现Agent不能把未评审或未验证任务标Done。
 
-当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；SQL Server/Redis服务连通和真实事务语义归T03验证）；T02 InProgress；T03 InProgress（platform及Query/ParticipationSlot表首批已落，领域迁移需真实SQL Server验证）；T04 InProgress（先行UnitOfWork/receipt实现，真实SQL Server语义待验）；T14 InProgress（纯状态机、SQL repository、同事务幂等创建命令和依赖注入HTTP路由已实现首批；尚无真实库、Identity认证接线和Join Saga）。旧文差异无法核实不再阻塞新设计。
+当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，需在Supabase验证）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T14 InProgress（纯状态机、PostgreSQL repository、同事务幂等create/leave/vote命令及注入式HTTP写路由已有首批；尚无真实库、Identity认证接线和Join Saga）。旧文差异无法核实不再阻塞新设计。
 
 实现任务含代码、适用单元/集成测试、错误处理、可观测性和文档；不允许TODO、固定成功值或mock代替验收。T00为设计任务，只需独立文档评审，不要求不存在的代码/数据库测试；兼容性实测归T01、故障实测归T03–T08及后续任务。验证责任不能以“未实测”永久阻塞设计定稿。
 
@@ -42,11 +42,11 @@
 
 ### T01 工程骨架与检查体系（Done；0.5–1日）
 - 依赖：T00设计交付完成（明确例外：不必等独立评审Done，限无业务骨架）；目录：根配置、apps/packages骨架、CI；独占锁文件。
-- 版本责任：确认本机Node.js/SQL Server/Redis版本，选择兼容的Node驱动和Redis客户端、锁定依赖与工具链；不预设PostgreSQL/Drizzle。遵循CB策略，不执行被拦截二进制。
-- 已落文件骨架：npm workspace根配置、strict TS配置、Fastify API最小存活端点/测试、Zod环境schema（SQL Server/Redis连接参数）。已切换本终端至Node.js 24.10.0/npm 11.6.1。
+- 版本责任：确认Node.js/Supabase PostgreSQL/Redis版本，选择兼容的PostgreSQL驱动和Redis客户端、锁定依赖与工具链；不强制ORM。遵循CB策略，不执行被拦截二进制。
+- 已落文件骨架：npm workspace根配置、strict TS配置、Fastify API最小存活端点/测试、Zod环境schema（DATABASE_URL/Redis）。已切换本终端至Node.js 24.10.0/npm 11.6.1。
 - 工具链：删除tsx/Vitest，不包含esbuild/Vite依赖；dev使用Node 24原生TypeScript/watch，test使用node:test，生产构建使用tsc。
 - 验收记录：npm install成功并生成package-lock；typecheck/build成功，node:test 1/1通过，Node原生TS源码测试1/1通过，npm audit报告0漏洞。此处仅验证骨架，不代表数据库连接或业务闭环。
-- 数据库边界：驱动/客户端模块在Node 24可加载，但未连接本机SQL Server/Redis；真实服务版本、连接及SQL语义验证交由T03，未声称通过。
+- 数据库边界：PostgreSQL驱动已安装；尚未连接用户Supabase项目或执行migration。Supabase连接、权限及SQL语义验证交由T03，未声称通过。
 - 剩余环境提示：npm用户配置中`msvs_version`/`python`旧字段仍产生无害弃用警告，不影响安装或检查。
 - 成果不含业务空壳页面/默认管理员密码；环境不允许运行时标Review或Blocked并列未验证项，不能Done。
 - 验收：骨架构建；禁止内部导入/环的反例测试；无秘密和本机绝对路径依赖。
@@ -55,19 +55,19 @@
 - 依赖：T00/T01；目录：contracts/kernel。
 - 交付：事件信封、MVP HTTP/WS/错误、公开端口、Actor/幂等、Clock/ID/随机源。
 - 已实现首批：strict Zod HTTP/事件/错误/操作状态/WS schema、内部可信Actor与命令元数据、16–128 ASCII幂等键、规范化输入SHA-256摘要（含循环/非法JSON/64层深度限制）、Clock/UUID/密码学随机源端口；MVP角色/Query/传播/聊天/举报/分页/MFA/管理请求及角色/Query快照/榜单/通知/Board/管理响应schema均已覆盖，WS schema明确无业务写类型。
-- 验证：API/契约/Kernel/Query/平台迁移、receipt、Query repository、创建命令和注入式HTTP路由合计38项测试通过；格式、production typecheck/build、边界规则正反例3项及3模块扫描通过。receipt/repository/命令集成仅fake验证；真实数据库事务、Identity认证上下文接线和剩余领域路由仍待实现。
+- 验证：API/契约/Kernel/Query/PostgreSQL migration与adapter、receipt、Query repository、Query create/leave/vote命令和注入式HTTP路由合计44项API测试通过；格式、typecheck/build及边界规则反例3项/3模块扫描通过。上述数据库行为仍为fake/unit测试，Supabase真实连接/迁移/事务及Identity接线未验证。
 - 补齐：Query创建/leave、排行榜、可靠通知、聊天/举报、MFA再认证、Saga重试、moderation、规则派发状态接口；按M0 G01–G14生成契约反例。WS只订阅/提示/心跳，不新增业务写消息。
-- Query纯领域首批已实现：创建者自动入waiting、四人满员固定场景后进入exploring、waiting leave/超时取消、每人两次不同地点私有inspect、固定120/60秒deadline、expectedVersion投票替换、平票choice_1/全弃权null；授权view不返回truth或参与者内部ID。延迟worker跨越多个deadline时每次只推进一个phase，防止跳过voting；过期房间不能leave。SQL Server repository已支持聚合创建/读取/乐观版本保存，读回恢复场景随机种子及私有证据；创建命令与receipt共用一个UoW事务，同Key重放同响应、异请求冲突。POST /queries已通过依赖注入路由实现，缺少trusted Actor会401、严格校验请求及幂等键；生产组合根尚未接入Identity和数据库服务，因此默认app仍只开放health。
+- Query纯领域首批已实现：创建者自动入waiting、四人满员固定场景后进入exploring、waiting leave/超时取消、每人两次不同地点私有inspect、固定120/60秒deadline、expectedVersion投票替换、平票choice_1/全弃权null；授权view不返回truth或参与者内部ID。延迟worker跨越多个deadline时每次只推进一个phase，防止跳过voting；过期房间不能leave。PostgreSQL repository支持聚合创建/读取/乐观版本保存，读回恢复场景随机种子及私有证据；create/leave/vote命令与receipt共用一个UoW事务，同Key重放同响应、异请求冲突。依赖注入HTTP路由已覆盖创建、退出和投票；生产组合根尚未接入Identity和数据库服务，因此默认app仍只开放health。数据库命令目前只有fake事务测试，生产数据库语义未验证。
 - 验收：拒绝伪造actor/权限/真伪/delta字段；公开DTO无秘密；无any和领域框架依赖。
 - 冻结点：后端/UI按审查契约并行；变更须协调者审批。
 
 ### T03 数据Schema与迁移（1–2日）
 - 依赖：T02；目录：platform数据库、迁移、数据库文档。
 - 交付：MVP表、CHECK/FK/唯一键/索引、version、账本/授予/任务/交付去重、隔离测试工具及所有权。
-- 已先行交付的平台基础：可事务化的迁移器、SQL Server `sp_getapplock` 跨进程互斥、迁移历史/顺序保护；首个SQL Server migration建立命令receipt、Outbox stream/event、delivery（租约/fencingToken/前驱）、Inbox generation去重及审计表。通过 `npm run db:migrate --workspace=@mud/api` 显式运行；连接凭据仅从环境变量读取，缺少用户名/密码会安全失败，不会在API启动时自动改库。
-- 验证：迁移器4项测试通过，覆盖一次性应用、迁移历史缺口/乱序、事务失败不落历史和迁移ID校验；Query repository增加fake测试覆盖聚合创建/重载、版本CAS和UTF-8种子二进制存储；整体格式/类型/构建与38项测试通过。尚未对本机SQL Server执行迁移，T-SQL及并发锁/事务语义未宣称通过。
+- 已先行交付的平台基础：PostgreSQL Pool/TLS连接、READ COMMITTED UnitOfWork、advisory lock迁移器、迁移历史/顺序保护；首批PostgreSQL migrations建立命令receipt、Outbox stream/event、delivery、Inbox及审计表，并创建Query/ParticipationSlot schema。`npm run db:migrate --workspace=@mud/api`显式执行；`DATABASE_URL`仅从环境读取，缺失时安全失败；API启动不自动改库。
+- 验证：迁移器fake测试覆盖一次性应用、迁移历史缺口/乱序、事务失败不落历史和迁移ID校验；PostgreSQL adapter/Query repository当前由fake测试验证，未连Supabase。迁移SQL、TLS、角色、advisory锁与事务/CAS并发语义尚未实库验证。
 - 并行例外：先行platform通用持久层后，已追加Query/ParticipationSlot首批表；其余领域schema继续受契约门禁约束。
-- 已新增Query/ParticipationSlot schema：房间版本/阶段约束、已确认玩家唯一占用槽、Join预留过期索引、每人每地点唯一/最多两次行动、私有卡和投票表；仅写入migration文件，未在SQL Server执行。
+- 已新增Query/ParticipationSlot PostgreSQL schema：房间版本/阶段约束、已确认玩家唯一占用槽、Join预留过期索引、每人每地点唯一/最多两次行动、私有卡和投票表；仅写入migration文件，未在Supabase执行。
 - 补齐：Social按spreadOperationId幂等受众快照/举报/禁言记录、Identity禁用/MFA凭据/bootstrap_pending会话状态、初始release种子、发布checksum审批、投影generation；不建R1资源空表。
 - 验收：空库迁移及bootstrap gameplay/glossary种子幂等激活、重复运行不覆盖已激活版本；NULL作用域、重复效果、负资源、越界世界值、并发版本冲突的真实库测试；不建R2空表。
 - 独占schema：模块需要变更时由本任务负责人追加迁移。
@@ -77,8 +77,8 @@
 ### T04 事务、命令幂等和审计（InProgress；1日）
 - 依赖：T03；目录：platform事务/幂等/审计。
 - 交付：UnitOfWork、receipt、expectedVersion、事务内成功审计与失败安全审计端口。
-- 已实现首批：SQL Server SERIALIZABLE UnitOfWork；receipt按actorScope+operation+key获取事务级sp_getapplock，同摘要重放已存响应、异摘要冲突；业务handler和成功receipt共用事务，失败回滚。4项测试验证重放/冲突/失败原子性/输入校验（transaction fake）。
-- 限制：认证可用性/对象授权必须在调用receipt前重验；真实SQL Server锁竞争、唯一键和rollback集成测试未执行。该通用逻辑先行开发，T03数据库验证门禁仍保留。
+- 已实现首批：PostgreSQL READ COMMITTED UnitOfWork；receipt按actorScope+operation+key获取事务级advisory lock，同摘要重放已存响应、异摘要冲突；业务handler和成功receipt共用事务，失败回滚。事务fake测试验证重放/冲突/失败原子性/输入校验。
+- 限制：认证可用性/对象授权必须在调用receipt前重验；Supabase并发锁、唯一键和rollback集成测试未执行。T03数据库验证门禁仍保留。
 - 验收：同key复用、不同内容409、并发一次提交；业务+receipt+Outbox+审计一起回滚；日志无凭证。
 
 ### T05 持久化事件交付（1–2日）
@@ -142,7 +142,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 依赖：T10/T06/T08；目录：query状态机。
 - 交付：房间/成员/行动/投票、deadline、固定release/随机种子、不可变裁决和计划。
 - 子任务：T14a房间/创建/退出/独立ParticipationSlot协调/超时；T14b探索卡/匿名投票/变体与确定性裁决。Join必须持久化执行预留房间座位→独立占槽→确认成员，不跨聚合事务；只有四位确认才开始，恢复/超时可释放预留。执行M0 G01–G06、G09；源信息卡留Query，不能行动事务改Knowledge。
-- 当前交付是可测试的纯Query状态机；持久化适配器/Join Saga协调/HTTP端点与内容种子尚未完成，不表示T14子任务完成。
+- 当前交付包括纯Query状态机、PostgreSQL repository（fake UoW测试）、create/leave/vote幂等命令和依赖注入HTTP端点；尚未完成Join Saga协调、inspect/phase推进端点、内容种子及结算，因此不表示T14子任务完成。Supabase真实事务语义仍未验证。
 - 验收：四人探索/投票；同一玩家并发加入两房间及每个Join步骤崩溃/重试不双占、可安全释放预留；重复/平票/缺席/退出/逾期符合T00；重启不重抽。
 
 ### T15 结算Saga（1–2日）

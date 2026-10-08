@@ -1,16 +1,16 @@
 # M0 契约数据字典 v1.0
 
-> 状态：设计已定稿并完成只读复核；不是T02可执行schema或实现证据。数据平台改为本机SQL Server/Redis适配，兼容性未验证。[M0决策定稿](m0-decisions.md)规范具体玩法与安全选择，本文件维护接口语义；文件名保留以兼容已有链接。
+> 状态：设计已定稿并完成只读复核；不是T02可执行schema或实现证据。数据平台采用Supabase PostgreSQL/Redis；真实连接与迁移尚未验证。[M0决策定稿](m0-decisions.md)规范具体玩法与安全选择，本文件维护接口语义；文件名保留以兼容已有链接。
 >
 > 来源限制：依据当前基线与用户授权建立新设计，原始v2未逐项核对；不是已证实的旧版差异报告。首发内容与DSL见 [实现规范](mvp-content-and-rules.md)，威胁与验证责任见 [威胁模型](threat-model.md)。
 
 ## 1. 决策状态
 
-P-01至P-12已在 [M0决策定稿](m0-decisions.md)全部决定，不再要求用户逐项审批。旧文无法核实仅限制差异报告，不阻塞当前设计开发。独立设计评审完成；依赖版本/构建/SQL Server真实库故障测试仍未运行；设计批准与实测证据严格分开。
+P-01至P-12已在 [M0决策定稿](m0-decisions.md)全部决定，不再要求用户逐项审批。旧文无法核实仅限制差异报告，不阻塞当前设计开发。独立设计评审完成；依赖版本/构建/Supabase PostgreSQL真实库故障测试仍未运行；设计批准与实测证据严格分开。
 
 ### 已采用的安全不变量
 
-- 本机SQL Server是可靠业务状态来源；Redis只用于可恢复提示、缓存、在线状态和限流。
+- Supabase PostgreSQL是可靠业务状态来源；Redis只用于可恢复提示、缓存、在线状态和限流。
 - 公开输入、配置、命令、事件及响应必须校验；请求体不能指定 actor、权限、资源增减、真伪或隐藏来源。
 - 聚合写入局限于所属模块；跨聚合操作通过可恢复命令/事件，不共享业务事务。
 - 效果/授予/消费/事件处理以数据库唯一键和幂等键保证重复安全，不能只靠内存判断。
@@ -179,36 +179,37 @@ MVP不建立持久WS消息历史；缺口/断线统一重新获取HTTP授权快�
 配套ADR依据用户委托标记Accepted（设计采用），实测和独立评审状态分别记录；Accepted不代表兼容性或安全测试通过：
 
 - [ADR-0001 模块化单体](adr/0001-modular-monolith.md)
-- [ADR-0002 SQL Server Outbox与至少一次交付](adr/0002-postgres-outbox-delivery.md)
+- [ADR-0002 Outbox语义（SQL Server实现部分由ADR-0006取代）](adr/0002-postgres-outbox-delivery.md)
 - [ADR-0003 跨聚合前向恢复Saga](adr/0003-forward-recovery-sagas.md)
 - [ADR-0004 不可变配置与Release](adr/0004-immutable-config-releases.md)
 - [ADR-0005 会话身份与规则安全边界](adr/0005-session-and-rule-boundaries.md)
+- [ADR-0006 Supabase PostgreSQL](adr/0006-supabase-postgresql.md)
 
 | 决策 | 当前提案 | 需要的验证/记录 | 状态 |
 |---|---|---|---|
 | 架构 | TypeScript模块化单体；worker独立进程，共享契约 | T01依赖检查 | Accepted设计，未实测 |
-| 持久层 | 本机SQL Server为业务真相；平台适配器使用参数化T-SQL和版本化迁移，不假设ORM支持 | T01驱动兼容性、T03事务/迁移验证 | 本机目标已采用，未实测 |
-| 消息 | SQL Server Outbox→归档/delivery；至少一次+幂等 | T05真实SQL Server故障验证 | 设计已采用，未实测 |
+| 持久层 | Supabase PostgreSQL为业务真相；平台适配器使用参数化SQL和版本化迁移，不假设ORM支持 | T03 Supabase连接/TLS/事务/迁移验证 | 用户已指定，尚未实测 |
+| 消息 | PostgreSQL Outbox→归档/delivery；至少一次+幂等 | T05真实Supabase PostgreSQL故障验证 | 设计已采用，未实测 |
 | 配置 | 独立gameplay/glossary激活指针和不可变版本 | T07/T20切换/旧版验证 | Accepted设计，未实测 |
 | 认证 | 同源Cookie、CSRF/Origin、Argon2id、管理TOTP | T09/T20安全验证 | Accepted设计，未实测 |
 | DSL | 数据AST纯解释器，不运行用户代码 | T17/T18预算/拒绝集 | Accepted设计，未实测 |
 | UI | React/Vite/TanStack Query；Zustand仅局部状态按需使用 | T01精确版本及T21浏览器验证 | Accepted设计，未实测 |
-| 支持矩阵 | 本机Node.js/SQL Server/Redis版本为开发目标；兼容最低版本由T01记录 | T01锁定Node/驱动/Redis客户端精确版本并验证兼容/安全通告 | 本机目标已采用，实测Unverified |
+| 支持矩阵 | Node.js/Supabase PostgreSQL/Redis为开发目标；兼容最低版本由T01记录 | T01锁定Node/驱动/Redis客户端精确版本并验证兼容/安全通告 | 目标已采用，数据库未实测 |
 
-本机Node.js/SQL Server/Redis作为首发开发环境，不臆定其版本。T01需在获准的本机验证阶段确认版本、驱动和客户端兼容，选择精确稳定依赖并生成锁文件；审核许可证/安全通告，构建验证后记录兼容清单。SQL Server事务/租约/排序语法必须实测，不照搬PostgreSQL行为。
+Node.js/Supabase PostgreSQL/Redis作为首发开发环境。T01/T03确认驱动、连接模式和客户端兼容，选择精确稳定依赖并生成锁文件；审核许可证/安全通告，构建验证后记录兼容清单。PostgreSQL事务/租约/排序/advisory lock语义必须在Supabase实测。
 
 ## 9. M0最小风险验证方案（不执行）
 
 所有测试必须在授权隔离环境实施；下列是计划，不代表已运行。
 
-1. **Outbox/Inbox原子性**：真实SQL Server中分别在业务提交前、提交后/确认前杀worker；检查事件和效果最终恰好一次业务影响。
+1. **Outbox/Inbox原子性**：真实Supabase PostgreSQL中分别在业务提交前、提交后/确认前杀worker；检查事件和效果最终恰好一次业务影响。
 2. **租约与竞争**：两个worker并发领取同delivery，注入超时与租约到期；证明不会永久丢失、业务效果唯一，并观测最老积压。
 3. **Saga前向恢复**：每个目标步骤提交后崩溃，重复恢复；逐项比较积分账本、授予凭证、Board账本、Query状态。
 4. **规则解释器**：构造属性链/原型/超深AST/超计算预算/未知字段等拒绝集；双worker同root竞争共享预算；断言无动态代码执行。
 5. **预览零副作用**：注入所有端口均会失败的测试替身；预览路径成功给出计划但所有副作用调用数为零。
 6. **授权与秘密DTO**：跨账户请求知识/操作状态，逐字段检查HTTP/WS/日志序列化；断言不存在内部字段。
 7. **配置切换**：激活失败、通知丢失、worker重启、旧Saga恢复；旧操作继续用固定版本，新操作读激活版本。
-8. **迁移恢复**：全新SQL Server数据库/前一版库升级；在非生产快照验证备份恢复和投影重建。
+8. **迁移恢复**：隔离Supabase PostgreSQL项目升级；在非生产快照验证备份恢复和投影重建。
 
 每个验证需记录：代码/迁移版本、环境规格、步骤、输入种子、预期/实测、失败与重试、原始报告位置及评审人。不得仅以mock、单测或“本地看起来正常”替代真实故障验证。
 

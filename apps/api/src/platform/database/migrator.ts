@@ -1,4 +1,4 @@
-import type { DatabaseMigration } from "./migrations.ts";
+import type { DatabaseMigration } from "./postgres-migrations.ts";
 
 export interface MigrationSession {
   acquireMigrationLock(): Promise<void>;

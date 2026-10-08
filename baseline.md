@@ -4,7 +4,7 @@
 >
 > 原始旧文未逐项核实，不能视为原文差异报告；以本版作为新设计起点。设计采用不代表依赖兼容、运行测试、独立评审或法律合规已验证。
 >
-> 状态：T00设计交付与只读复核完成；T01已建立本机Node.js/SQL Server/Redis适配的无业务骨架。Node.js 24.10依赖安装、类型检查、构建及基础测试已通过；SQL Server/Redis运行兼容性仍待验证。
+> 状态：T00设计交付与只读复核完成；T01已建立Node.js/Fastify骨架。2026-10-08按用户指定将durable database改为Supabase PostgreSQL；适配器与迁移尚未连接远程数据库验证。
 
 ## 1. 产品目标与范围
 
@@ -31,7 +31,7 @@ R1/R2不得拖累MVP门禁。MVP预留接口和数据契约，不实现空壳页
 ## 2. 架构原则
 
 1. 采用模块化单体，首版不拆微服务；领域边界优先于技术分层。
-2. SQL Server是业务状态、任务、事件、配置版本的持久化真相来源；Redis不承担可靠消息的唯一存储。
+2. Supabase托管PostgreSQL是业务状态、任务、事件、配置版本的持久化真相来源；Redis不承担可靠消息的唯一存储。
 3. 一个业务事务只修改一个领域聚合，可同时写该操作的Outbox、命令幂等记录、审计等技术记录。投影和配置发布有明确的独立事务边界。
 4. 跨聚合用公开命令与持久化事件实现最终一致，不共享事务、不跨模块读写内部表。
 5. 领域规则在聚合/领域服务中；Pipeline仅编排，不能绕过授权、不变量和幂等。
@@ -51,13 +51,13 @@ R1/R2不得拖累MVP门禁。MVP预留接口和数据契约，不实现空壳页
 | 工程 | npm workspaces（随Node.js提供）、TypeScript strict、统一ESLint/格式配置 |
 | 运行时 | Node.js 24 LTS；M0验证兼容性并锁定具体版本 |
 | 后端 | Fastify、受控WebSocket接入、Zod |
-| 数据 | 本机SQL Server；通过参数化T-SQL仓储与版本化SQL迁移访问，具体Server版本/驱动兼容性由T01验证 |
+| 数据 | Supabase托管PostgreSQL；通过参数化PostgreSQL仓储与版本化SQL迁移访问，连接凭据经`DATABASE_URL` Secret提供 |
 | Redis | 本机Redis，用于在线状态、限流、缓存及可丢失的刷新提示；精确版本由T01探测/确认 |
 | 前端 | React、Vite、React Router、TanStack Query、Zustand、Tailwind；M0锁定相互兼容的稳定版本 |
-| 测试 | Vitest、真实SQL Server/Redis集成测试、Playwright E2E |
+| 测试 | Node.js `node:test`（当前）、Supabase PostgreSQL/Redis集成测试、Playwright E2E |
 | 观测 | 结构化日志、OpenTelemetry trace/metrics、关联ID |
 
-不强制引入ORM。SQL Server存储适配器拥有参数化T-SQL、连接池与事务实现；迁移为审核过的版本化SQL。禁止拼接用户输入构建SQL；领域模块只能经平台事务/仓储端口访问所属表。数据库隔离级别、RCSI设置、租约领取和并发语义须通过真实SQL Server测试确定，不能照搬PostgreSQL语法或锁提示。
+不强制引入ORM。PostgreSQL存储适配器拥有参数化SQL、连接池与事务实现；迁移为审核过的版本化SQL。禁止拼接用户输入构建SQL；领域模块只能经平台事务/仓储端口访问所属表。事务隔离、advisory lock、租约领取及并发语义须通过Supabase PostgreSQL集成测试确定。数据库技术决策见[ADR-0006](docs/adr/0006-supabase-postgresql.md)。
 
 ### 3.2 目录与依赖
 
@@ -235,7 +235,7 @@ R1先记录可追溯规则使用和策略标签。R2做确定性序列统计，�
 
 ## 7. 数据模型与迁移
 
-本文只列逻辑数据与不变量，M0/T03产出由平台适配器管理的SQL Server schema与版本化迁移，不重复多份CREATE TABLE。
+本文只列逻辑数据与不变量，M0/T03产出由平台适配器管理的PostgreSQL schema与版本化迁移，不重复多份CREATE TABLE。
 
 | 分组 | 逻辑表 |
 |---|---|
@@ -250,7 +250,7 @@ R1先记录可追溯规则使用和策略标签。R2做确定性序列统计，�
 | 技术 | command_receipts、outbox、event_store、event_deliveries、inbox、dead_letters、durable_jobs、saga_instances、saga_steps、pipeline_runs、audit_logs |
 | 投影 | player_profiles、board_dashboard、query_history、leaderboard、emergence_timeline（R1） |
 
-- 日期时间以UTC存储/序列化，SQL Server列类型与驱动映射需在T03明确；资源用整数或明确精度decimal，不用浮点做账。
+- 日期时间以UTC存储/序列化，PostgreSQL列类型与驱动映射需在T03明确；资源用整数或明确精度numeric，不用浮点做账。
 - version/CHECK/NOT NULL/唯一键属于正确性；每账号一角色（MVP）。
 - 初始1000分，范围0…1,000,000,000；参与+5、正确投票另+20，明确记录上限夹取。段位积分不是可消费货币；resource_1仅R1实现。
 - profession_1…6、faction_1…6、power_1…2、rank_1…5；首发72组合均合法，仅展示身份，不附加能力；段位下限0/1000/1500/2000/3000。

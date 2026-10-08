@@ -44,7 +44,7 @@ export class CommandStillPendingError extends Error {
   }
 }
 
-export class SqlServerCommandReceipts {
+export class PostgresCommandReceipts {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
   async execute<T>(
@@ -118,15 +118,7 @@ async function acquireReceiptLock(
     )
     .digest("hex");
   await transaction.query(
-    `
-DECLARE @lockResult int;
-EXEC @lockResult = sys.sp_getapplock
-  @Resource = @resource,
-  @LockMode = N'Exclusive',
-  @LockOwner = N'Transaction',
-  @LockTimeout = 15000;
-IF @lockResult < 0 THROW 51001, 'Could not acquire command receipt lock', 1;
-`,
+    "SELECT pg_advisory_xact_lock(hashtextextended(@resource, 0))",
     { resource: `mud:receipt:${lockName}` },
   );
 }
@@ -137,11 +129,13 @@ async function loadReceipt(
 ): Promise<StoredReceipt | undefined> {
   const rows = await transaction.query<StoredReceipt>(
     `
-SELECT requestDigest, status, responseJson
-FROM platform.CommandReceipts WITH (UPDLOCK, HOLDLOCK)
-WHERE actorScope = @actorScope
-  AND operation = @operation
-  AND idempotencyKey = @idempotencyKey;
+SELECT "requestDigest" AS "requestDigest", "status" AS "status",
+       "responseJson" AS "responseJson"
+FROM "platform"."CommandReceipts"
+WHERE "actorScope" = @actorScope
+  AND "operation" = @operation
+  AND "idempotencyKey" = @idempotencyKey
+FOR UPDATE;
 `,
     {
       actorScope: command.actorScope,
@@ -160,9 +154,9 @@ async function persistReceipt<T>(
 ): Promise<void> {
   await transaction.query(
     `
-INSERT INTO platform.CommandReceipts
-  (actorScope, operation, idempotencyKey, requestDigest, status, responseJson,
-   resourceId, operationId, expiresAt)
+INSERT INTO "platform"."CommandReceipts"
+  ("actorScope", "operation", "idempotencyKey", "requestDigest", "status", "responseJson",
+   "resourceId", "operationId", "expiresAt")
 VALUES
   (@actorScope, @operation, @idempotencyKey, @requestDigest, 'completed', @responseJson,
    @resourceId, @operationId, @expiresAt);

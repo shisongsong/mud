@@ -12,11 +12,11 @@
 - 文档评审不要求运行数据库；类型/构建/兼容性/故障验证由其实现任务和阶段门禁承担。不能用未来测试要求永久阻塞当前设计任务。
 - 初始授权仅含设计/文档；用户随后明确授权切换本机Node版本和安装项目依赖。不得操作Git、写入数据库或部署。CB拦截不绕过：已移除触发esbuild.exe执行的非必需dev/test工具依赖后，npm安装成功。
 
-### 本机运行环境适配（T01）
+### 本机运行环境适配（T01；2026-10-08持久层决策修订）
 
-- 用户指定以本机Node.js、SQL Server和Redis为开发环境；替换旧提案中的PostgreSQL/Drizzle假设，不改变模块化单体、单聚合事务、Outbox/Inbox、至少一次投递、幂等效果和Saga前向恢复语义。
-- Workspace使用随Node.js提供的npm workspaces；应用保持TypeScript strict，API采用Fastify/Zod。SQL Server以Node驱动及平台参数化T-SQL适配器访问；Redis只经独立基础设施适配器使用。
-- SQL Server通过平台自有连接/事务与参数化T-SQL仓储访问；数据库迁移采用版本化SQL。具体SQL Server版本、Node驱动、Redis客户端、隔离/RCSI及租约领取语义须在T01/T03真实环境验证，未验证前不得宣称兼容或强一致。
+- 用户先前指定本机Node.js、SQL Server和Redis；2026-10-08明确改为Supabase PostgreSQL作为durable source of truth，不改变模块化单体、单聚合事务、Outbox/Inbox、至少一次投递、幂等效果和Saga前向恢复语义。新决策见[ADR-0006](adr/0006-supabase-postgresql.md)，取代ADR-0002中的SQL Server实现选择。
+- Workspace使用随Node.js提供的npm workspaces；应用保持TypeScript strict，API采用Fastify/Zod。PostgreSQL以`pg`驱动及平台参数化仓储访问；Redis只经独立基础设施适配器使用。
+- Supabase通过`DATABASE_URL`连接；数据库密码仅由本机`.env`或部署Secret提供，连接强制TLS校验。迁移采用版本化PostgreSQL SQL。直连、网络/IPv6、pooler、角色权限、连接限制和并发语义须在T03真实环境验证，未验证前不得宣称兼容或生产可用。
 - 本次环境说明授权按该技术栈编写代码；不等同于运行安装命令、访问网络、操作Git或修改本机数据库的许可。遇CB拦截立即停止，不绕过。
 
 ## 2. 首发玩法（P-01至P-04）

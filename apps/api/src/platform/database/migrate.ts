@@ -1,19 +1,14 @@
-import sql from "mssql";
 import { loadEnvironment } from "../../config/env.ts";
 import { applyMigrations } from "./migrator.ts";
-import { migrations } from "./migrations.ts";
-import {
-  createSqlServerConfig,
-  SqlServerMigrationDatabase,
-} from "./sql-server.ts";
+import { postgresMigrations } from "./postgres-migrations.ts";
+import { createPostgresPool, PostgresMigrationDatabase } from "./postgres.ts";
 
-const pool = new sql.ConnectionPool(createSqlServerConfig(loadEnvironment()));
+const pool = createPostgresPool(loadEnvironment());
 
 try {
-  await pool.connect();
   const applied = await applyMigrations(
-    new SqlServerMigrationDatabase(pool),
-    migrations,
+    new PostgresMigrationDatabase(pool),
+    postgresMigrations,
   );
   console.info(
     applied.length === 0
@@ -24,5 +19,5 @@ try {
   console.error("Database migration failed.", error);
   process.exitCode = 1;
 } finally {
-  if (pool.connected) await pool.close();
+  await pool.end();
 }

@@ -15,7 +15,7 @@ import type {
   SqlParameters,
   UnitOfWork,
 } from "../transactions/unit-of-work.ts";
-import { SqlServerQueryRepository } from "./query-repository.ts";
+import { PostgresQueryRepository } from "./query-repository.ts";
 
 const playerIds = [
   "00000000-0000-4000-8000-000000000001",
@@ -64,10 +64,10 @@ class RecordingUnitOfWork implements UnitOfWork {
   private rowsFor(statement: string): readonly object[] {
     const aggregate = this.aggregate;
     if (!aggregate) return [];
-    if (statement.includes("OUTPUT inserted.queryId")) {
+    if (statement.includes('RETURNING "queryId"')) {
       return this.allowUpdate ? [{ queryId: aggregate.queryId }] : [];
     }
-    if (statement.includes("FROM [query].QueryRooms")) {
+    if (statement.includes('FROM "query"."QueryRooms"')) {
       return [
         {
           queryId: aggregate.queryId,
@@ -91,13 +91,13 @@ class RecordingUnitOfWork implements UnitOfWork {
         },
       ];
     }
-    if (statement.includes("FROM [query].QueryParticipants")) {
+    if (statement.includes('FROM "query"."QueryParticipants"')) {
       return aggregate.participants.map(({ playerId, joinedAt }) => ({
         playerId,
         joinedAt: new Date(joinedAt),
       }));
     }
-    if (statement.includes("FROM [query].QueryActions")) {
+    if (statement.includes('FROM "query"."QueryActions"')) {
       return aggregate.actions.map(
         ({ playerId, siteId, card, acceptedAt }) => ({
           playerId,
@@ -109,7 +109,7 @@ class RecordingUnitOfWork implements UnitOfWork {
         }),
       );
     }
-    if (statement.includes("FROM [query].QueryVotes")) {
+    if (statement.includes('FROM "query"."QueryVotes"')) {
       return aggregate.votes.map(({ playerId, choice }) => ({
         playerId,
         choice,
@@ -121,7 +121,7 @@ class RecordingUnitOfWork implements UnitOfWork {
 
 test("Query repository creates the aggregate and its initial participants atomically", async () => {
   const unitOfWork = new RecordingUnitOfWork();
-  const repository = new SqlServerQueryRepository(unitOfWork);
+  const repository = new PostgresQueryRepository(unitOfWork);
   const query = createQuery(
     queryId,
     playerIds[0]!,
@@ -134,11 +134,11 @@ test("Query repository creates the aggregate and its initial participants atomic
   assert.equal(unitOfWork.statements.length, 2);
   assert.match(
     unitOfWork.statements[0]!.statement,
-    /INSERT INTO \[query\]\.QueryRooms/,
+    /INSERT INTO "query"\."QueryRooms"/,
   );
   assert.match(
     unitOfWork.statements[1]!.statement,
-    /INSERT INTO \[query\]\.QueryParticipants/,
+    /INSERT INTO "query"\."QueryParticipants"/,
   );
   assert.deepEqual(unitOfWork.statements[1]!.parameters, {
     queryId,
@@ -149,7 +149,7 @@ test("Query repository creates the aggregate and its initial participants atomic
 
 test("Query repository writes scenario seeds as bounded UTF-8 bytes", async () => {
   const unitOfWork = new RecordingUnitOfWork();
-  const repository = new SqlServerQueryRepository(unitOfWork);
+  const repository = new PostgresQueryRepository(unitOfWork);
 
   await repository.create(exploringQuery());
 
@@ -168,7 +168,7 @@ test("Query repository rehydrates scenario and keeps evidence truth private", as
     text: "A clue known only to its finder.",
     isTruth: true,
   }));
-  const repository = new SqlServerQueryRepository(
+  const repository = new PostgresQueryRepository(
     new RecordingUnitOfWork(query),
   );
 
@@ -197,13 +197,13 @@ test("Query repository uses aggregate-version compare-and-swap before replacing 
     isTruth: false,
   }));
   const unitOfWork = new RecordingUnitOfWork(changed);
-  const repository = new SqlServerQueryRepository(unitOfWork);
+  const repository = new PostgresQueryRepository(unitOfWork);
 
   unitOfWork.allowUpdate = false;
   assert.equal(await repository.save(changed, current.version), false);
   assert.equal(
     unitOfWork.statements.some(({ statement }) =>
-      statement.startsWith("DELETE FROM [query]."),
+      statement.startsWith('DELETE FROM "query".'),
     ),
     false,
   );
@@ -213,11 +213,11 @@ test("Query repository uses aggregate-version compare-and-swap before replacing 
   assert.equal(await repository.save(changed, current.version), true);
   assert.match(
     unitOfWork.statements[0]!.statement,
-    /aggregateVersion = @expectedVersion/,
+    /"aggregateVersion" = @expectedVersion/,
   );
   assert.ok(
     unitOfWork.statements.some(({ statement }) =>
-      statement.includes("INSERT INTO [query].QueryActions"),
+      statement.includes('INSERT INTO "query"."QueryActions"'),
     ),
   );
 });

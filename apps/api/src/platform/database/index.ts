@@ -1,3 +1,3 @@
 export * from "./migrator.ts";
-export * from "./migrations.ts";
-export * from "./sql-server.ts";
+export * from "./postgres-migrations.ts";
+export * from "./postgres.ts";

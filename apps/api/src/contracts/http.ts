@@ -342,6 +342,7 @@ export const boardSnapshotResponseSchema = strictObject({
 
 export type CreateQueryRequest = z.infer<typeof createQueryRequestSchema>;
 export type CreateQueryResponse = z.infer<typeof createQueryResponseSchema>;
+export type LeaveQueryRequest = z.infer<typeof leaveQueryRequestSchema>;
 export type CreatePlayerRequest = z.infer<typeof createPlayerRequestSchema>;
 export type SubmitActionRequest = z.infer<typeof submitActionRequestSchema>;
 export type CastVoteRequest = z.infer<typeof castVoteRequestSchema>;

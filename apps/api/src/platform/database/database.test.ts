@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { MigrationDatabase, MigrationSession } from "./migrator.ts";
 import { applyMigrations } from "./migrator.ts";
-import { migrations, type DatabaseMigration } from "./migrations.ts";
+import {
+  postgresMigrations as migrations,
+  type DatabaseMigration,
+} from "./postgres-migrations.ts";
 
 class FakeMigrationDatabase implements MigrationDatabase {
   applied: string[] = [];
@@ -94,11 +97,17 @@ test("query migration encodes the MVP aggregate uniqueness and privacy storage",
   assert.ok(queryMigration);
   assert.match(
     queryMigration.sql,
-    /CREATE TABLE \[query\]\.ParticipationSlots/,
+    /CREATE TABLE "query"\."ParticipationSlots"/,
   );
-  assert.match(queryMigration.sql, /PRIMARY KEY \(playerId\)/);
-  assert.match(queryMigration.sql, /UQ_QueryActions_player_site/);
-  assert.match(queryMigration.sql, /evidenceText nvarchar\(4000\)/);
-  assert.match(queryMigration.sql, /isTruth bit NOT NULL/);
-  assert.match(queryMigration.sql, /CK_QueryVotes_choice/);
+  assert.match(queryMigration.sql, /"playerId" uuid PRIMARY KEY/);
+  assert.match(
+    queryMigration.sql,
+    /UNIQUE \("queryId", "playerId", "siteId"\)/,
+  );
+  assert.match(queryMigration.sql, /"evidenceText" varchar\(4000\)/);
+  assert.match(queryMigration.sql, /"isTruth" boolean NOT NULL/);
+  assert.match(
+    queryMigration.sql,
+    /"choice" IN \('choice_1', 'choice_2', 'abstain'\)/,
+  );
 });
