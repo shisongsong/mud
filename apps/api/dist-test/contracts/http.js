@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { durableOperationStatusSchema, operationStatusSchema, } from "./command.js";
-import { nonEmptyIdSchema, positiveVersionSchema } from "./identifiers.js";
+import { nonEmptyIdSchema, positiveVersionSchema, uuidSchema, } from "./identifiers.js";
 const strictObject = (shape) => z.object(shape).strict();
 const codePointText = (max) => z
     .string()
@@ -14,12 +14,45 @@ const paginationSchema = strictObject({
     limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 const timestampSchema = z.string().datetime({ offset: true });
+const accountUsernameSchema = z.string().regex(/^[A-Za-z0-9_]{3,32}$/);
+const accountPasswordSchema = z
+    .string()
+    .max(512)
+    .refine((password) => {
+    const length = Array.from(password).length;
+    return length >= 12 && length <= 128;
+})
+    .refine((password) => new TextEncoder().encode(password).byteLength <= 512);
+export const registerAccountRequestSchema = strictObject({
+    username: accountUsernameSchema,
+    password: accountPasswordSchema,
+});
+export const loginRequestSchema = strictObject({
+    username: accountUsernameSchema,
+    password: accountPasswordSchema,
+});
+export const sessionViewSchema = strictObject({
+    authenticated: z.boolean(),
+    accountId: uuidSchema.optional(),
+    expiresAt: timestampSchema,
+    csrfToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    mfaRequired: z.boolean(),
+}).refine((session) => session.authenticated === (session.accountId !== undefined));
 export const createQueryRequestSchema = strictObject({
     templateId: z.literal("trial_1"),
     gameplayReleaseId: nonEmptyIdSchema,
 });
 export const leaveQueryRequestSchema = strictObject({
     expectedVersion: positiveVersionSchema,
+});
+export const createQueryResponseSchema = strictObject({
+    queryId: z.string().uuid(),
+    aggregateVersion: positiveVersionSchema,
+});
+export const joinQueryResponseSchema = strictObject({
+    queryId: uuidSchema,
+    aggregateVersion: positiveVersionSchema,
+    phase: z.enum(["waiting", "exploring"]),
 });
 export const createPlayerRequestSchema = strictObject({
     displayName: codePointText(20).refine((value) => Array.from(value).length >= 2),

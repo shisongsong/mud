@@ -3,7 +3,11 @@ import {
   durableOperationStatusSchema,
   operationStatusSchema,
 } from "./command.ts";
-import { nonEmptyIdSchema, positiveVersionSchema } from "./identifiers.ts";
+import {
+  nonEmptyIdSchema,
+  positiveVersionSchema,
+  uuidSchema,
+} from "./identifiers.ts";
 
 const strictObject = <T extends z.ZodRawShape>(shape: T) =>
   z.object(shape).strict();
@@ -22,6 +26,36 @@ const paginationSchema = strictObject({
   limit: z.coerce.number().int().min(1).max(50).default(20),
 });
 const timestampSchema = z.string().datetime({ offset: true });
+const accountUsernameSchema = z.string().regex(/^[A-Za-z0-9_]{3,32}$/);
+const accountPasswordSchema = z
+  .string()
+  .max(512)
+  .refine((password) => {
+    const length = Array.from(password).length;
+    return length >= 12 && length <= 128;
+  })
+  .refine((password) => new TextEncoder().encode(password).byteLength <= 512);
+
+export const registerAccountRequestSchema = strictObject({
+  username: accountUsernameSchema,
+  password: accountPasswordSchema,
+});
+
+export const loginRequestSchema = strictObject({
+  username: accountUsernameSchema,
+  password: accountPasswordSchema,
+});
+
+export const sessionViewSchema = strictObject({
+  authenticated: z.boolean(),
+  accountId: uuidSchema.optional(),
+  expiresAt: timestampSchema,
+  csrfToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  mfaRequired: z.boolean(),
+}).refine(
+  (session) => session.authenticated === (session.accountId !== undefined),
+);
+export type SessionView = z.infer<typeof sessionViewSchema>;
 
 export const createQueryRequestSchema = strictObject({
   templateId: z.literal("trial_1"),
@@ -35,6 +69,12 @@ export const leaveQueryRequestSchema = strictObject({
 export const createQueryResponseSchema = strictObject({
   queryId: z.string().uuid(),
   aggregateVersion: positiveVersionSchema,
+});
+
+export const joinQueryResponseSchema = strictObject({
+  queryId: uuidSchema,
+  aggregateVersion: positiveVersionSchema,
+  phase: z.enum(["waiting", "exploring"]),
 });
 
 export const createPlayerRequestSchema = strictObject({
@@ -342,8 +382,10 @@ export const boardSnapshotResponseSchema = strictObject({
 
 export type CreateQueryRequest = z.infer<typeof createQueryRequestSchema>;
 export type CreateQueryResponse = z.infer<typeof createQueryResponseSchema>;
+export type JoinQueryResponse = z.infer<typeof joinQueryResponseSchema>;
 export type LeaveQueryRequest = z.infer<typeof leaveQueryRequestSchema>;
 export type CreatePlayerRequest = z.infer<typeof createPlayerRequestSchema>;
+export type CreatePlayerResponse = z.infer<typeof createPlayerResponseSchema>;
 export type SubmitActionRequest = z.infer<typeof submitActionRequestSchema>;
 export type CastVoteRequest = z.infer<typeof castVoteRequestSchema>;
 export type SpreadRequest = z.infer<typeof spreadRequestSchema>;

@@ -22,6 +22,41 @@ test("liveness endpoint returns a minimal response without touching dependencies
   assert.deepEqual(response.json(), { status: "ok" });
 });
 
+test("readiness endpoint checks its dependency and never exposes failure details", async () => {
+  let checks = 0;
+  const readyApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
+    checkReadiness: async () => {
+      checks += 1;
+    },
+  });
+  const unavailableApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
+    checkReadiness: async () => {
+      throw new Error("database connection string must stay private");
+    },
+  });
+
+  try {
+    const ready = await readyApp.inject({
+      method: "GET",
+      url: "/health/ready",
+    });
+    assert.equal(ready.statusCode, 200);
+    assert.deepEqual(ready.json(), { status: "ok" });
+    assert.equal(checks, 1);
+
+    const unavailable = await unavailableApp.inject({
+      method: "GET",
+      url: "/health/ready",
+    });
+    assert.equal(unavailable.statusCode, 503);
+    assert.deepEqual(unavailable.json(), { status: "not_ready" });
+    assert.doesNotMatch(unavailable.body, /connection string/);
+  } finally {
+    await readyApp.close();
+    await unavailableApp.close();
+  }
+});
+
 test("query creation requires a server-authenticated player and idempotency key", async () => {
   const player: PlayerActor = {
     kind: "player",
@@ -30,13 +65,15 @@ test("query creation requires a server-authenticated player and idempotency key"
   };
   let authenticated = false;
   let commandsCalled = 0;
+  const traceIds: string[] = [];
   const queryApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
     queries: {
       authenticatePlayer: async () => (authenticated ? player : null),
       commands: {
-        create: async (actor) => {
+        create: async (actor, _input, _key, traceId) => {
           commandsCalled += 1;
           assert.deepEqual(actor, player);
+          if (traceId) traceIds.push(traceId);
           return {
             replayed: false,
             result: {
@@ -97,6 +134,43 @@ test("query creation requires a server-authenticated player and idempotency key"
       aggregateVersion: 1,
     });
     assert.equal(commandsCalled, 1);
+    assert.equal(traceIds.length, 1);
+    assert.match(traceIds[0]!, /^[0-9a-f-]{36}$/);
+  } finally {
+    await queryApp.close();
+  }
+});
+
+test("Query creation reports unavailable gameplay instead of persisting a room", async () => {
+  const player: PlayerActor = {
+    kind: "player",
+    accountId: "11111111-1111-4111-8111-111111111111",
+    playerId: "22222222-2222-4222-8222-222222222222",
+  };
+  const queryApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
+    queries: {
+      authenticatePlayer: async () => player,
+      commands: {
+        create: async () => {
+          throw Object.assign(new Error("no playable release"), {
+            code: "GAMEPLAY_NOT_READY",
+          });
+        },
+      },
+    },
+  });
+  try {
+    const response = await queryApp.inject({
+      method: "POST",
+      url: "/queries",
+      payload: {
+        templateId: "trial_1",
+        gameplayReleaseId: "gameplay_bootstrap_v1",
+      },
+      headers: { "idempotency-key": "query-not-ready-key-0001" },
+    });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().code, "GAMEPLAY_NOT_READY");
   } finally {
     await queryApp.close();
   }
@@ -110,6 +184,7 @@ test("query leave and vote routes use authenticated actors and strict request co
   };
   const queryId = "33333333-3333-4333-8333-333333333333";
   const calls: string[] = [];
+  const traceIds: string[] = [];
   const queryApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
     queries: {
       authenticatePlayer: async () => player,
@@ -118,18 +193,19 @@ test("query leave and vote routes use authenticated actors and strict request co
           replayed: false,
           result: { queryId, aggregateVersion: 1 },
         }),
-        leave: async (actor, receivedQueryId, input, key) => {
+        leave: async (actor, receivedQueryId, input, key, traceId) => {
           assert.deepEqual(actor, player);
           assert.equal(receivedQueryId, queryId);
           assert.deepEqual(input, { expectedVersion: 1 });
           assert.equal(key, "leave-query-key-0001");
+          if (traceId) traceIds.push(traceId);
           calls.push("leave");
           return {
             replayed: false,
             result: { resourceId: queryId, aggregateVersion: 2 },
           };
         },
-        vote: async (actor, receivedQueryId, input, key) => {
+        vote: async (actor, receivedQueryId, input, key, traceId) => {
           assert.deepEqual(actor, player);
           assert.equal(receivedQueryId, queryId);
           assert.deepEqual(input, {
@@ -137,6 +213,7 @@ test("query leave and vote routes use authenticated actors and strict request co
             expectedVersion: 2,
           });
           assert.equal(key, "cast-vote-key-0001");
+          if (traceId) traceIds.push(traceId);
           calls.push("vote");
           return {
             replayed: true,
@@ -171,6 +248,8 @@ test("query leave and vote routes use authenticated actors and strict request co
       resourceId: queryId,
       aggregateVersion: 3,
     });
+    assert.equal(traceIds.length, 2);
+    assert.ok(traceIds.every((traceId) => /^[0-9a-f-]{36}$/.test(traceId)));
 
     const forgedActor = await queryApp.inject({
       method: "POST",
@@ -184,6 +263,76 @@ test("query leave and vote routes use authenticated actors and strict request co
     });
     assert.equal(forgedActor.statusCode, 400);
     assert.deepEqual(calls, ["leave", "vote"]);
+  } finally {
+    await queryApp.close();
+  }
+});
+
+test("query join route validates input and maps join conflicts to 409", async () => {
+  const player = {
+    kind: "player" as const,
+    accountId: "11111111-1111-4111-8111-111111111111",
+    playerId: "22222222-2222-4222-8222-222222222222",
+  };
+  const queryId = "33333333-3333-4333-8333-333333333333";
+  let conflict = false;
+  const queryApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {
+    queries: {
+      authenticatePlayer: async () => player,
+      commands: {
+        create: async () => ({
+          replayed: false,
+          result: { queryId, aggregateVersion: 1 },
+        }),
+        join: async (actor, receivedQueryId, key) => {
+          assert.deepEqual(actor, player);
+          assert.equal(receivedQueryId, queryId);
+          assert.equal(key, "join-query-key-0001");
+          if (conflict) {
+            throw Object.assign(new Error("conflict"), {
+              code: "QUERY_JOIN_PLAYER_ALREADY_IN_QUERY",
+            });
+          }
+          return {
+            replayed: false,
+            result: {
+              queryId,
+              aggregateVersion: 4,
+              phase: "exploring" as const,
+            },
+          };
+        },
+      },
+    },
+  });
+
+  try {
+    const joined = await queryApp.inject({
+      method: "POST",
+      url: `/query/${queryId}/join`,
+      headers: { "idempotency-key": "join-query-key-0001" },
+    });
+    assert.equal(joined.statusCode, 200);
+    assert.deepEqual(joined.json(), {
+      queryId,
+      aggregateVersion: 4,
+      phase: "exploring",
+    });
+
+    const missingKey = await queryApp.inject({
+      method: "POST",
+      url: `/query/${queryId}/join`,
+    });
+    assert.equal(missingKey.statusCode, 400);
+
+    conflict = true;
+    const duplicate = await queryApp.inject({
+      method: "POST",
+      url: `/query/${queryId}/join`,
+      headers: { "idempotency-key": "join-query-key-0001" },
+    });
+    assert.equal(duplicate.statusCode, 409);
+    assert.equal(duplicate.json().code, "QUERY_CONFLICT");
   } finally {
     await queryApp.close();
   }

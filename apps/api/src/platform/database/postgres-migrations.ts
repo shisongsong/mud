@@ -1,6 +1,107 @@
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../../kernel/idempotency.ts";
+
 export interface DatabaseMigration {
   readonly id: string;
   readonly sql: string;
+}
+
+export const trial1GameplaySnapshot = {
+  queryEnabled: true,
+  templates: ["trial_1"],
+  content: {
+    trial_1: {
+      choices: [
+        {
+          choiceId: "choice_1",
+          messageKey: "trial.choice.mark",
+          args: { mark: "K1" },
+        },
+        {
+          choiceId: "choice_2",
+          messageKey: "trial.choice.mark",
+          args: { mark: "K2" },
+        },
+      ],
+      variants: [
+        {
+          variantId: "variant_1",
+          correctChoiceId: "choice_1",
+          explanationKey: "trial.explanation.current_mark",
+          evidence: [
+            {
+              siteId: "site_1",
+              messageKey: "trial.evidence.current_mark",
+              args: { mark: "K1" },
+              isTruth: true,
+            },
+            {
+              siteId: "site_2",
+              messageKey: "trial.evidence.same_mark_rule",
+              args: {},
+              isTruth: true,
+            },
+            {
+              siteId: "site_3",
+              messageKey: "trial.evidence.unsigned_rumor",
+              args: { mark: "K2" },
+              isTruth: false,
+            },
+          ],
+        },
+        {
+          variantId: "variant_2",
+          correctChoiceId: "choice_2",
+          explanationKey: "trial.explanation.current_mark",
+          evidence: [
+            {
+              siteId: "site_1",
+              messageKey: "trial.evidence.current_mark",
+              args: { mark: "K2" },
+              isTruth: true,
+            },
+            {
+              siteId: "site_2",
+              messageKey: "trial.evidence.same_mark_rule",
+              args: {},
+              isTruth: true,
+            },
+            {
+              siteId: "site_3",
+              messageKey: "trial.evidence.unsigned_rumor",
+              args: { mark: "K1" },
+              isTruth: false,
+            },
+          ],
+        },
+      ],
+    },
+  },
+} as const;
+
+export const trial1GameplayChecksum = createHash("sha256")
+  .update(canonicalJson(trial1GameplaySnapshot), "utf8")
+  .digest("hex");
+
+export const trial1GlossarySnapshot = {
+  locale: "zh-CN",
+  entries: {
+    "trial.choice.mark": "编号 {mark}",
+    "trial.evidence.current_mark": "有效记录：本轮有效印记为编号 {mark}",
+    "trial.evidence.same_mark_rule":
+      "有效记录：仅选择编号与有效印记相同的候选才符合目标",
+    "trial.evidence.unsigned_rumor":
+      "未署名传闻：应选编号 {mark}；有效印记记录可能已过时",
+    "trial.explanation.current_mark": "选择与本轮有效印记一致的候选。",
+  },
+} as const;
+
+export const trial1GlossaryChecksum = createHash("sha256")
+  .update(canonicalJson(trial1GlossarySnapshot), "utf8")
+  .digest("hex");
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 export const postgresMigrations: readonly DatabaseMigration[] = [
@@ -163,6 +264,147 @@ CREATE TABLE "query"."QueryVotes" (
   "updatedAt" timestamptz(3) NOT NULL,
   PRIMARY KEY ("queryId", "playerId"),
   FOREIGN KEY ("queryId", "playerId") REFERENCES "query"."QueryParticipants"("queryId", "playerId")
+);
+`,
+  },
+  {
+    id: "0003_outbox_dispatch_cursor",
+    sql: `
+ALTER TABLE "platform"."OutboxStreams"
+ADD COLUMN "nextDispatchSequence" bigint NOT NULL DEFAULT 1
+CHECK ("nextDispatchSequence" > 0);
+`,
+  },
+  {
+    id: "0004_identity_accounts_sessions",
+    sql: `
+CREATE SCHEMA IF NOT EXISTS "identity";
+CREATE TABLE "identity"."Accounts" (
+  "accountId" uuid PRIMARY KEY,
+  "username" varchar(32) COLLATE "C" NOT NULL UNIQUE
+    CHECK ("username" ~ '^[a-z0-9_]{3,32}$'),
+  "passwordHash" varchar(255) NOT NULL,
+  "status" varchar(24) NOT NULL DEFAULT 'active'
+    CHECK ("status" IN ('active', 'disabled', 'bootstrap_pending')),
+  "createdAt" timestamptz(3) NOT NULL DEFAULT now(),
+  "updatedAt" timestamptz(3) NOT NULL DEFAULT now()
+);
+
+CREATE TABLE "identity"."Sessions" (
+  "sessionHash" char(64) PRIMARY KEY,
+  "accountId" uuid NULL REFERENCES "identity"."Accounts"("accountId") ON DELETE CASCADE,
+  "csrfHash" char(64) NOT NULL,
+  "createdAt" timestamptz(3) NOT NULL DEFAULT now(),
+  "lastSeenAt" timestamptz(3) NOT NULL DEFAULT now(),
+  "expiresAt" timestamptz(3) NOT NULL,
+  "absoluteExpiresAt" timestamptz(3) NOT NULL,
+  "revokedAt" timestamptz(3) NULL,
+  CHECK ("expiresAt" <= "absoluteExpiresAt")
+);
+CREATE INDEX "IX_IdentitySessions_account" ON "identity"."Sessions" ("accountId", "expiresAt")
+  WHERE "accountId" IS NOT NULL AND "revokedAt" IS NULL;
+CREATE INDEX "IX_IdentitySessions_expiry" ON "identity"."Sessions" ("expiresAt");
+`,
+  },
+  {
+    id: "0005_player_profiles",
+    sql: `
+CREATE SCHEMA IF NOT EXISTS "player";
+CREATE TABLE "player"."Players" (
+  "playerId" uuid PRIMARY KEY,
+  "accountId" uuid NOT NULL UNIQUE
+    REFERENCES "identity"."Accounts"("accountId") ON DELETE CASCADE,
+  "displayName" varchar(80) NOT NULL
+    CHECK (char_length("displayName") BETWEEN 2 AND 20),
+  "factionId" varchar(32) NOT NULL
+    CHECK ("factionId" IN ('faction_1', 'faction_2', 'faction_3', 'faction_4', 'faction_5', 'faction_6')),
+  "powerId" varchar(32) NOT NULL
+    CHECK ("powerId" IN ('power_1', 'power_2')),
+  "professionId" varchar(32) NOT NULL
+    CHECK ("professionId" IN ('profession_1', 'profession_2', 'profession_3', 'profession_4', 'profession_5', 'profession_6')),
+  "gameplayReleaseId" varchar(128) NOT NULL,
+  "score" integer NOT NULL DEFAULT 1000 CHECK ("score" BETWEEN 0 AND 2147483647),
+  "aggregateVersion" bigint NOT NULL DEFAULT 1 CHECK ("aggregateVersion" > 0),
+  "createdAt" timestamptz(3) NOT NULL DEFAULT now(),
+  "updatedAt" timestamptz(3) NOT NULL DEFAULT now()
+);
+`,
+  },
+  {
+    id: "0006_bootstrap_releases",
+    sql: `
+CREATE SCHEMA IF NOT EXISTS "control";
+CREATE TABLE "control"."ConfigReleases" (
+  "releaseKind" varchar(16) NOT NULL CHECK ("releaseKind" IN ('gameplay', 'glossary')),
+  "releaseId" varchar(128) NOT NULL,
+  "manifestChecksum" char(64) NOT NULL CHECK ("manifestChecksum" ~ '^[a-f0-9]{64}$'),
+  "snapshotJson" jsonb NOT NULL CHECK (jsonb_typeof("snapshotJson") = 'object'),
+  "createdAt" timestamptz(3) NOT NULL DEFAULT now(),
+  PRIMARY KEY ("releaseKind", "releaseId")
+);
+CREATE TABLE "control"."ActiveReleasePointers" (
+  "releaseKind" varchar(16) PRIMARY KEY CHECK ("releaseKind" IN ('gameplay', 'glossary')),
+  "releaseId" varchar(128) NOT NULL,
+  "version" bigint NOT NULL DEFAULT 1 CHECK ("version" > 0),
+  "updatedAt" timestamptz(3) NOT NULL DEFAULT now(),
+  FOREIGN KEY ("releaseKind", "releaseId")
+    REFERENCES "control"."ConfigReleases"("releaseKind", "releaseId")
+);
+CREATE FUNCTION "control"."reject_config_release_mutation"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'configuration releases are immutable' USING ERRCODE = '55000';
+END;
+$$;
+CREATE TRIGGER "TR_ConfigReleases_immutable"
+BEFORE UPDATE OR DELETE ON "control"."ConfigReleases"
+FOR EACH ROW EXECUTE FUNCTION "control"."reject_config_release_mutation"();
+
+INSERT INTO "control"."ConfigReleases"
+  ("releaseKind", "releaseId", "manifestChecksum", "snapshotJson")
+VALUES
+  ('gameplay', 'gameplay_bootstrap_v1',
+   '1cfe180ace5d11ee8296524d46345c48a75b42c9c1d47b69f36de13282d56283',
+   '{"queryEnabled":false,"templates":["trial_1"]}'::jsonb),
+  ('glossary', 'glossary_bootstrap_v1',
+   'a21e6c786546b559f5797e2adf887d169eb28be0120a83a3ddda898395b92290',
+   '{"entries":{},"locale":"zh-CN"}'::jsonb)
+ON CONFLICT ("releaseKind", "releaseId") DO NOTHING;
+INSERT INTO "control"."ActiveReleasePointers" ("releaseKind", "releaseId")
+VALUES
+  ('gameplay', 'gameplay_bootstrap_v1'),
+  ('glossary', 'glossary_bootstrap_v1')
+ON CONFLICT ("releaseKind") DO NOTHING;
+`,
+  },
+  {
+    id: "0007_trial_1_content_release",
+    sql: `
+INSERT INTO "control"."ConfigReleases"
+  ("releaseKind", "releaseId", "manifestChecksum", "snapshotJson")
+VALUES
+  ('gameplay', 'gameplay_trial_1_v1', '${trial1GameplayChecksum}',
+   ${sqlStringLiteral(JSON.stringify(trial1GameplaySnapshot))}::jsonb)
+ON CONFLICT ("releaseKind", "releaseId") DO NOTHING;
+INSERT INTO "control"."ConfigReleases"
+  ("releaseKind", "releaseId", "manifestChecksum", "snapshotJson")
+VALUES
+  ('glossary', 'glossary_trial_1_v1', '${trial1GlossaryChecksum}',
+   ${sqlStringLiteral(JSON.stringify(trial1GlossarySnapshot))}::jsonb)
+ON CONFLICT ("releaseKind", "releaseId") DO NOTHING;
+`,
+  },
+  {
+    id: "0008_query_settlement_plan",
+    sql: `
+CREATE TABLE "query"."SettlementPlans" (
+  "queryId" uuid PRIMARY KEY REFERENCES "query"."QueryRooms"("queryId"),
+  "settlementId" varchar(128) NOT NULL UNIQUE
+);
+CREATE TABLE "query"."SettlementTargets" (
+  "queryId" uuid NOT NULL REFERENCES "query"."SettlementPlans"("queryId"),
+  "effectKey" varchar(256) NOT NULL,
+  PRIMARY KEY ("queryId", "effectKey")
 );
 `,
   },

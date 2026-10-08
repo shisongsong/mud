@@ -4,6 +4,7 @@ import {
   advanceQuery,
   castVote,
   createQuery,
+  finalizeSettlement,
   getAuthorizedQueryView,
   inspectQuery,
   joinQuery,
@@ -223,4 +224,55 @@ test("deadline resolution uses choice_1 for a nonempty tie and null for all abst
   const noVotesResolved = advanceQuery(voting, voting.deadline!);
   assert.equal(noVotesResolved.phase, "settling");
   assert.equal(noVotesResolved.selectedChoice, null);
+});
+
+test("settlement completes only after every planned effect is confirmed", () => {
+  let query = fullQuery(10_000);
+  query = inspectQuery(query, "player_1", "site_1", 10_001, () => ({
+    cardId: "card_1",
+    playerId: "player_1",
+    siteId: "site_1",
+    text: "A private clue",
+    isTruth: true,
+  }));
+  query = advanceQuery(query, 130_000);
+  assert.throws(
+    () => finalizeSettlement(query, []),
+    (error: unknown) =>
+      error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING",
+  );
+
+  query = advanceQuery(query, 190_000);
+  const plan = query.settlementPlan;
+  assert.equal(query.phase, "settling");
+  assert.deepEqual(plan?.targets, [
+    "board:query_1",
+    "knowledge:query_1:card_1",
+    "points:query_1:player_1",
+    "points:query_1:player_2",
+    "points:query_1:player_3",
+    "points:query_1:player_4",
+  ]);
+
+  const targets = plan?.targets ?? [];
+  assert.throws(
+    () => finalizeSettlement(query, targets.slice(1)),
+    (error: unknown) =>
+      error instanceof QueryRuleError && error.code === "SETTLEMENT_INCOMPLETE",
+  );
+  assert.throws(
+    () => finalizeSettlement(query, [...targets, "knowledge:query_1:forged"]),
+    (error: unknown) =>
+      error instanceof QueryRuleError &&
+      error.code === "SETTLEMENT_PLAN_MISMATCH",
+  );
+
+  const completed = finalizeSettlement(query, [...targets].reverse());
+  assert.equal(completed.phase, "completed");
+  assert.equal(completed.version, query.version + 1);
+  assert.throws(
+    () => finalizeSettlement(completed, targets),
+    (error: unknown) =>
+      error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING",
+  );
 });

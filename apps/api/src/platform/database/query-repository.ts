@@ -1,3 +1,4 @@
+import { joinQuery, QueryRuleError } from "../../modules/query/public.ts";
 import type {
   PrivateEvidenceCard,
   QueryAggregate,
@@ -7,6 +8,7 @@ import type {
   QueryScenario,
   QuerySite,
   QueryVote,
+  SettlementPlan,
 } from "../../modules/query/public.ts";
 import type {
   QueryExecutor,
@@ -47,6 +49,27 @@ interface VoteRow {
   readonly choice: QueryVote;
 }
 
+interface JoinReservationRow {
+  readonly reservationId: string;
+  readonly queryId: string;
+  readonly playerId: string;
+  readonly status:
+    "reserved" | "slot_claimed" | "confirmed" | "released" | "expired";
+  readonly expiresAt: Date;
+}
+
+export class QueryJoinConflictError extends Error {
+  constructor(
+    readonly code:
+      | "QUERY_JOIN_PLAYER_ALREADY_IN_QUERY"
+      | "QUERY_JOIN_RESERVATION_EXPIRED"
+      | "QUERY_JOIN_RESERVATION_NOT_READY",
+  ) {
+    super(code);
+    this.name = "QueryJoinConflictError";
+  }
+}
+
 export class PostgresQueryRepository implements QueryRepository {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
@@ -74,6 +97,382 @@ VALUES
       roomParameters(query),
     );
     await insertChildren(transaction, query);
+  }
+
+  async reserveJoinSeatInTransaction(
+    transaction: QueryExecutor,
+    reservationId: string,
+    queryId: string,
+    playerId: string,
+    now: number,
+  ): Promise<{ readonly expiresAt: Date }> {
+    const rooms = await transaction.query<{
+      readonly phase: QueryPhase;
+      readonly deadline: Date | null;
+    }>(
+      `
+SELECT "phase" AS "phase", "deadline" AS "deadline"
+FROM "query"."QueryRooms"
+WHERE "queryId" = @queryId
+FOR UPDATE;
+`,
+      { queryId },
+    );
+    const room = rooms[0];
+    if (!room) {
+      const error = new Error("Query not found");
+      error.name = "QueryNotFoundError";
+      throw error;
+    }
+    if (room.phase !== "waiting") {
+      throw new QueryRuleError("QUERY_NOT_WAITING");
+    }
+    if (room.deadline === null || room.deadline.getTime() <= now) {
+      throw new QueryRuleError("QUERY_EXPIRED");
+    }
+
+    const seatRows = await transaction.query<{
+      readonly seatCount: number;
+      readonly alreadyMember: boolean;
+    }>(
+      `
+SELECT COUNT(*)::integer AS "seatCount",
+       COALESCE(BOOL_OR("playerId" = @playerId), FALSE) AS "alreadyMember"
+FROM "query"."QueryParticipants"
+WHERE "queryId" = @queryId
+  AND "participationStatus" IN ('reserved', 'confirmed');
+`,
+      { queryId, playerId },
+    );
+    const seats = seatRows[0];
+    if (!seats || seats.alreadyMember) {
+      throw new QueryRuleError("QUERY_ALREADY_MEMBER");
+    }
+    if (seats.seatCount >= 4) {
+      throw new QueryRuleError("QUERY_FULL");
+    }
+
+    const expiresAt = room.deadline;
+    await transaction.query(
+      `
+INSERT INTO "query"."JoinReservations"
+  ("reservationId", "queryId", "playerId", "status", "createdAt", "expiresAt")
+VALUES
+  (@reservationId, @queryId, @playerId, 'reserved', @createdAt, @expiresAt);
+`,
+      {
+        reservationId,
+        queryId,
+        playerId,
+        createdAt: new Date(now),
+        expiresAt,
+      },
+    );
+    await transaction.query(
+      `
+INSERT INTO "query"."QueryParticipants"
+  ("queryId", "playerId", "joinedAt", "participationStatus")
+VALUES
+  (@queryId, @playerId, @joinedAt, 'reserved');
+`,
+      { queryId, playerId, joinedAt: new Date(now) },
+    );
+    return { expiresAt };
+  }
+
+  async claimParticipationSlot(
+    reservationId: string,
+    now: number,
+  ): Promise<void> {
+    await this.unitOfWork.transaction(async (transaction) => {
+      const reservations = await transaction.query<JoinReservationRow>(
+        `
+SELECT "reservationId" AS "reservationId", "queryId" AS "queryId",
+       "playerId" AS "playerId", "status" AS "status", "expiresAt" AS "expiresAt"
+FROM "query"."JoinReservations"
+WHERE "reservationId" = @reservationId
+FOR UPDATE;
+`,
+        { reservationId },
+      );
+      const reservation = reservations[0];
+      if (!reservation) {
+        throw new QueryJoinConflictError("QUERY_JOIN_RESERVATION_EXPIRED");
+      }
+      if (
+        reservation.status === "slot_claimed" ||
+        reservation.status === "confirmed"
+      ) {
+        return;
+      }
+      if (
+        reservation.status !== "reserved" ||
+        reservation.expiresAt.getTime() <= now
+      ) {
+        throw new QueryJoinConflictError("QUERY_JOIN_RESERVATION_EXPIRED");
+      }
+
+      const inserted = await transaction.query<{ readonly playerId: string }>(
+        `
+INSERT INTO "query"."ParticipationSlots" ("playerId", "queryId", "status", "claimedAt")
+VALUES (@playerId, @queryId, 'active', @claimedAt)
+ON CONFLICT ("playerId") DO NOTHING
+RETURNING "playerId" AS "playerId";
+`,
+        {
+          playerId: reservation.playerId,
+          queryId: reservation.queryId,
+          claimedAt: new Date(now),
+        },
+      );
+      if (inserted.length === 0) {
+        const slots = await transaction.query<{ readonly queryId: string }>(
+          `
+SELECT "queryId" AS "queryId"
+FROM "query"."ParticipationSlots"
+WHERE "playerId" = @playerId;
+`,
+          { playerId: reservation.playerId },
+        );
+        if (slots[0]?.queryId !== reservation.queryId) {
+          throw new QueryJoinConflictError(
+            "QUERY_JOIN_PLAYER_ALREADY_IN_QUERY",
+          );
+        }
+      }
+
+      await transaction.query(
+        `
+UPDATE "query"."JoinReservations"
+SET "status" = 'slot_claimed'
+WHERE "reservationId" = @reservationId AND "status" = 'reserved';
+`,
+        { reservationId },
+      );
+    });
+  }
+
+  async releaseParticipationSlot(reservationId: string): Promise<void> {
+    await this.unitOfWork.transaction(async (transaction) => {
+      const reservations = await transaction.query<JoinReservationRow>(
+        `
+SELECT "reservationId" AS "reservationId", "queryId" AS "queryId",
+       "playerId" AS "playerId", "status" AS "status", "expiresAt" AS "expiresAt"
+FROM "query"."JoinReservations"
+WHERE "reservationId" = @reservationId
+FOR UPDATE;
+`,
+        { reservationId },
+      );
+      const reservation = reservations[0];
+      if (!reservation || reservation.status !== "slot_claimed") return;
+      await transaction.query(
+        `DELETE FROM "query"."ParticipationSlots"
+WHERE "playerId" = @playerId AND "queryId" = @queryId AND "status" = 'active';`,
+        { playerId: reservation.playerId, queryId: reservation.queryId },
+      );
+    });
+  }
+
+  async releaseJoinSeat(reservationId: string): Promise<void> {
+    await this.unitOfWork.transaction(async (transaction) => {
+      const reservations = await transaction.query<JoinReservationRow>(
+        `
+SELECT "reservationId" AS "reservationId", "queryId" AS "queryId",
+       "playerId" AS "playerId", "status" AS "status", "expiresAt" AS "expiresAt"
+FROM "query"."JoinReservations"
+WHERE "reservationId" = @reservationId
+FOR UPDATE;
+`,
+        { reservationId },
+      );
+      const reservation = reservations[0];
+      if (!reservation || reservation.status === "confirmed") return;
+      await transaction.query(
+        `DELETE FROM "query"."QueryParticipants"
+WHERE "queryId" = @queryId AND "playerId" = @playerId
+  AND "participationStatus" = 'reserved';`,
+        { queryId: reservation.queryId, playerId: reservation.playerId },
+      );
+      await transaction.query(
+        `UPDATE "query"."JoinReservations" SET "status" = 'released'
+WHERE "reservationId" = @reservationId
+  AND "status" IN ('reserved', 'slot_claimed');`,
+        { reservationId },
+      );
+    });
+  }
+
+  async listExpiredJoinReservationIds(
+    now: number,
+    limit: number,
+  ): Promise<readonly string[]> {
+    return this.unitOfWork.transaction(async (transaction) => {
+      const rows = await transaction.query<{
+        readonly reservationId: string;
+      }>(
+        `
+SELECT "reservationId" AS "reservationId"
+FROM "query"."JoinReservations"
+WHERE "status" IN ('reserved', 'slot_claimed') AND "expiresAt" <= @now
+ORDER BY "expiresAt", "reservationId"
+LIMIT @limit;
+`,
+        { now: new Date(now), limit },
+      );
+      return rows.map(({ reservationId }) => reservationId);
+    });
+  }
+
+  async runInTransaction<T>(
+    work: (transaction: QueryExecutor) => Promise<T>,
+  ): Promise<T> {
+    return this.unitOfWork.transaction(work);
+  }
+
+  async listDueQueryIds(
+    now: number,
+    limit: number,
+  ): Promise<readonly string[]> {
+    return this.unitOfWork.transaction(async (transaction) => {
+      const rows = await transaction.query<{ readonly queryId: string }>(
+        `
+SELECT "queryId" AS "queryId"
+FROM "query"."QueryRooms"
+WHERE "phase" IN ('waiting', 'exploring', 'voting') AND "deadline" <= @now
+ORDER BY "deadline", "queryId"
+LIMIT @limit;
+`,
+        { now: new Date(now), limit },
+      );
+      return rows.map(({ queryId }) => queryId);
+    });
+  }
+
+  async confirmJoinInTransaction(
+    transaction: QueryExecutor,
+    reservationId: string,
+    now: number,
+    createScenario: (
+      transaction: QueryExecutor,
+      query: QueryAggregate,
+    ) => Promise<QueryScenario>,
+    afterConfirmed: (
+      transaction: QueryExecutor,
+      query: QueryAggregate,
+    ) => Promise<void>,
+  ): Promise<{ readonly query: QueryAggregate; readonly replayed: boolean }> {
+    const reservations = await transaction.query<JoinReservationRow>(
+      `
+SELECT "reservationId" AS "reservationId", "queryId" AS "queryId",
+       "playerId" AS "playerId", "status" AS "status", "expiresAt" AS "expiresAt"
+FROM "query"."JoinReservations"
+WHERE "reservationId" = @reservationId
+FOR UPDATE;
+`,
+      { reservationId },
+    );
+    const reservation = reservations[0];
+    if (!reservation) {
+      throw new QueryJoinConflictError("QUERY_JOIN_RESERVATION_EXPIRED");
+    }
+    const current = await this.getInTransaction(
+      transaction,
+      reservation.queryId,
+    );
+    if (!current) {
+      const error = new Error("Query not found");
+      error.name = "QueryNotFoundError";
+      throw error;
+    }
+    if (reservation.status === "confirmed") {
+      return { query: current, replayed: true };
+    }
+    if (
+      reservation.status !== "slot_claimed" ||
+      reservation.expiresAt.getTime() <= now
+    ) {
+      throw new QueryJoinConflictError("QUERY_JOIN_RESERVATION_NOT_READY");
+    }
+
+    const slots = await transaction.query<{ readonly queryId: string }>(
+      `
+SELECT "queryId" AS "queryId"
+FROM "query"."ParticipationSlots"
+WHERE "playerId" = @playerId AND "status" = 'active';
+`,
+      { playerId: reservation.playerId },
+    );
+    if (slots[0]?.queryId !== reservation.queryId) {
+      throw new QueryJoinConflictError("QUERY_JOIN_RESERVATION_NOT_READY");
+    }
+    if (
+      current.participants.some(
+        ({ playerId }) => playerId === reservation.playerId,
+      )
+    ) {
+      await transaction.query(
+        `UPDATE "query"."JoinReservations" SET "status" = 'confirmed'
+WHERE "reservationId" = @reservationId;`,
+        { reservationId },
+      );
+      return { query: current, replayed: true };
+    }
+
+    const scenario =
+      current.participants.length === 3
+        ? await createScenario(transaction, current)
+        : null;
+    const updated = joinQuery(current, reservation.playerId, now, () => {
+      if (!scenario) throw new QueryRuleError("INVALID_SCENARIO");
+      return scenario;
+    });
+    await transaction.query(
+      `DELETE FROM "query"."QueryParticipants"
+WHERE "queryId" = @queryId AND "playerId" = @playerId
+  AND "participationStatus" = 'reserved';`,
+      { queryId: reservation.queryId, playerId: reservation.playerId },
+    );
+    const saved = await this.saveInTransaction(
+      transaction,
+      updated,
+      current.version,
+    );
+    if (!saved) {
+      const error = new Error("Query aggregate version changed");
+      error.name = "QueryConcurrencyError";
+      throw error;
+    }
+    await transaction.query(
+      `UPDATE "query"."JoinReservations" SET "status" = 'confirmed'
+WHERE "reservationId" = @reservationId;`,
+      { reservationId },
+    );
+    await afterConfirmed(transaction, updated);
+    return { query: updated, replayed: false };
+  }
+
+  async confirmJoin(
+    reservationId: string,
+    now: number,
+    createScenario: (
+      transaction: QueryExecutor,
+      query: QueryAggregate,
+    ) => Promise<QueryScenario>,
+    afterConfirmed: (
+      transaction: QueryExecutor,
+      query: QueryAggregate,
+    ) => Promise<void>,
+  ): Promise<{ readonly query: QueryAggregate; readonly replayed: boolean }> {
+    return this.unitOfWork.transaction((transaction) =>
+      this.confirmJoinInTransaction(
+        transaction,
+        reservationId,
+        now,
+        createScenario,
+        afterConfirmed,
+      ),
+    );
   }
 
   async get(queryId: string): Promise<QueryAggregate | null> {
@@ -130,7 +529,35 @@ ORDER BY "playerId";
 `,
       { queryId },
     );
-    return hydrateQuery(room, participants, actions, votes);
+    const planRows = await transaction.query<{
+      readonly settlementId: string;
+    }>(
+      `
+SELECT "settlementId" AS "settlementId"
+FROM "query"."SettlementPlans"
+WHERE "queryId" = @queryId;
+`,
+      { queryId },
+    );
+    const targetRows = await transaction.query<{
+      readonly effectKey: string;
+    }>(
+      `
+SELECT "effectKey" AS "effectKey"
+FROM "query"."SettlementTargets"
+WHERE "queryId" = @queryId
+ORDER BY "effectKey" COLLATE "C";
+`,
+      { queryId },
+    );
+    const settlementPlan: SettlementPlan | null =
+      planRows[0] === undefined
+        ? null
+        : {
+            settlementId: planRows[0].settlementId,
+            targets: targetRows.map(({ effectKey }) => effectKey),
+          };
+    return hydrateQuery(room, participants, actions, votes, settlementPlan);
   }
 
   async save(query: QueryAggregate, expectedVersion: number): Promise<boolean> {
@@ -186,10 +613,18 @@ RETURNING "queryId" AS "queryId";
       { queryId: query.queryId },
     );
     await transaction.query(
-      'DELETE FROM "query"."QueryParticipants" WHERE "queryId" = @queryId;',
+      `DELETE FROM "query"."QueryParticipants"
+WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed';`,
       { queryId: query.queryId },
     );
     await insertChildren(transaction, query);
+    if (query.settlementPlan !== null) {
+      await insertSettlementPlan(
+        transaction,
+        query.queryId,
+        query.settlementPlan,
+      );
+    }
     return true;
   }
 }
@@ -273,11 +708,37 @@ VALUES (@queryId, @playerId, @choice, CURRENT_TIMESTAMP);
   }
 }
 
+async function insertSettlementPlan(
+  transaction: QueryExecutor,
+  queryId: string,
+  plan: SettlementPlan,
+): Promise<void> {
+  await transaction.query(
+    `
+INSERT INTO "query"."SettlementPlans" ("queryId", "settlementId")
+VALUES (@queryId, @settlementId)
+ON CONFLICT ("queryId") DO NOTHING;
+`,
+    { queryId, settlementId: plan.settlementId },
+  );
+  for (const effectKey of plan.targets) {
+    await transaction.query(
+      `
+INSERT INTO "query"."SettlementTargets" ("queryId", "effectKey")
+VALUES (@queryId, @effectKey)
+ON CONFLICT ("queryId", "effectKey") DO NOTHING;
+`,
+      { queryId, effectKey },
+    );
+  }
+}
+
 function hydrateQuery(
   room: QueryRoomRow,
   participantRows: readonly ParticipantRow[],
   actionRows: readonly ActionRow[],
   voteRows: readonly VoteRow[],
+  settlementPlan: SettlementPlan | null,
 ): QueryAggregate {
   const scenario = hydrateScenario(room);
   return {
@@ -302,6 +763,7 @@ function hydrateQuery(
     })),
     votes: voteRows.map(({ playerId, choice }) => ({ playerId, choice })),
     selectedChoice: room.selectedChoice,
+    settlementPlan,
   };
 }
 

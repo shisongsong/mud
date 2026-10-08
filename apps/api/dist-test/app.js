@@ -1,6 +1,89 @@
 import Fastify from "fastify";
-export function createApp(_environment) {
+import { randomUUID } from "node:crypto";
+import { registerAuthRoutes, } from "./server/auth-routes.js";
+import { readSessionSecret } from "./server/auth-routes.js";
+import { registerPlayerRoutes, } from "./server/player-routes.js";
+import { registerGameplayRoutes, } from "./server/gameplay-routes.js";
+import { registerQueryRoutes, } from "./server/query-routes.js";
+export function createApp(_environment, dependencies = {}) {
     const app = Fastify({ logger: false });
     app.get("/health/live", async () => ({ status: "ok" }));
+    app.get("/health/ready", async (_request, reply) => {
+        if (!dependencies.checkReadiness) {
+            return reply.code(503).send({ status: "not_ready" });
+        }
+        try {
+            await dependencies.checkReadiness();
+            return { status: "ok" };
+        }
+        catch {
+            return reply.code(503).send({ status: "not_ready" });
+        }
+    });
+    const auth = dependencies.auth;
+    if (auth) {
+        app.addHook("preHandler", async (request, reply) => {
+            if (request.method === "GET" ||
+                request.method === "HEAD" ||
+                request.method === "OPTIONS" ||
+                request.url.startsWith("/auth/")) {
+                return;
+            }
+            const origin = request.headers.origin;
+            if (typeof origin !== "string" ||
+                origin === "null" ||
+                safeOrigin(origin) !== auth.publicOrigin) {
+                const traceId = randomUUID();
+                return reply.code(403).send({
+                    code: "ORIGIN_REJECTED",
+                    messageKey: "auth.originRejected",
+                    args: {},
+                    traceId,
+                });
+            }
+            try {
+                const csrfToken = request.headers["x-csrf-token"];
+                const valid = await auth.identity.validateCsrf(readSessionSecret(request, auth.secureCookies), typeof csrfToken === "string" ? csrfToken : null);
+                if (!valid) {
+                    const traceId = randomUUID();
+                    return reply.code(403).send({
+                        code: "CSRF_REJECTED",
+                        messageKey: "auth.csrfRejected",
+                        args: {},
+                        traceId,
+                    });
+                }
+            }
+            catch {
+                const traceId = randomUUID();
+                return reply.code(503).send({
+                    code: "AUTH_UNAVAILABLE",
+                    messageKey: "auth.unavailable",
+                    args: {},
+                    traceId,
+                });
+            }
+        });
+    }
+    if (dependencies.auth) {
+        registerAuthRoutes(app, dependencies.auth);
+    }
+    if (dependencies.players) {
+        registerPlayerRoutes(app, dependencies.players);
+    }
+    if (dependencies.gameplay) {
+        registerGameplayRoutes(app, dependencies.gameplay);
+    }
+    if (dependencies.queries) {
+        registerQueryRoutes(app, dependencies.queries);
+    }
     return app;
+}
+function safeOrigin(value) {
+    try {
+        return new URL(value).origin;
+    }
+    catch {
+        return null;
+    }
 }

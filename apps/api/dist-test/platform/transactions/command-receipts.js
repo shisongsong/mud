@@ -13,7 +13,7 @@ export class CommandStillPendingError extends Error {
         this.name = "CommandStillPendingError";
     }
 }
-export class SqlServerCommandReceipts {
+export class PostgresCommandReceipts {
     unitOfWork;
     constructor(unitOfWork) {
         this.unitOfWork = unitOfWork;
@@ -70,23 +70,17 @@ async function acquireReceiptLock(transaction, command) {
         command.idempotencyKey,
     ]), "utf8")
         .digest("hex");
-    await transaction.query(`
-DECLARE @lockResult int;
-EXEC @lockResult = sys.sp_getapplock
-  @Resource = @resource,
-  @LockMode = N'Exclusive',
-  @LockOwner = N'Transaction',
-  @LockTimeout = 15000;
-IF @lockResult < 0 THROW 51001, 'Could not acquire command receipt lock', 1;
-`, { resource: `mud:receipt:${lockName}` });
+    await transaction.query("SELECT pg_advisory_xact_lock(hashtextextended(@resource, 0))", { resource: `mud:receipt:${lockName}` });
 }
 async function loadReceipt(transaction, command) {
     const rows = await transaction.query(`
-SELECT requestDigest, status, responseJson
-FROM platform.CommandReceipts WITH (UPDLOCK, HOLDLOCK)
-WHERE actorScope = @actorScope
-  AND operation = @operation
-  AND idempotencyKey = @idempotencyKey;
+SELECT "requestDigest" AS "requestDigest", "status" AS "status",
+       "responseJson" AS "responseJson"
+FROM "platform"."CommandReceipts"
+WHERE "actorScope" = @actorScope
+  AND "operation" = @operation
+  AND "idempotencyKey" = @idempotencyKey
+FOR UPDATE;
 `, {
         actorScope: command.actorScope,
         operation: command.operation,
@@ -96,9 +90,9 @@ WHERE actorScope = @actorScope
 }
 async function persistReceipt(transaction, command, receipt, responseJson) {
     await transaction.query(`
-INSERT INTO platform.CommandReceipts
-  (actorScope, operation, idempotencyKey, requestDigest, status, responseJson,
-   resourceId, operationId, expiresAt)
+INSERT INTO "platform"."CommandReceipts"
+  ("actorScope", "operation", "idempotencyKey", "requestDigest", "status", "responseJson",
+   "resourceId", "operationId", "expiresAt")
 VALUES
   (@actorScope, @operation, @idempotencyKey, @requestDigest, 'completed', @responseJson,
    @resourceId, @operationId, @expiresAt);

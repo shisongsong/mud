@@ -62,6 +62,7 @@ test("production keeps certificate-chain verification enabled", async () => {
   const pool = createPostgresPool(
     loadEnvironment({
       NODE_ENV: "production",
+      PUBLIC_ORIGIN: "https://game.example.com",
       DATABASE_URL: "postgresql://postgres:placeholder@localhost:5432/postgres",
     }),
   );
@@ -72,4 +73,32 @@ test("production keeps certificate-chain verification enabled", async () => {
   } finally {
     await pool.end();
   }
+});
+
+test("production requires an HTTPS public origin for secure sessions", () => {
+  assert.throws(
+    () =>
+      loadEnvironment({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://postgres:placeholder@localhost:5432/postgres",
+      }),
+    /PUBLIC_ORIGIN is required in production/,
+  );
+  assert.throws(
+    () =>
+      loadEnvironment({
+        NODE_ENV: "production",
+        PUBLIC_ORIGIN: "http://game.example.com",
+        DATABASE_URL: "postgresql://postgres:placeholder@localhost:5432/postgres",
+      }),
+    /PUBLIC_ORIGIN must use HTTPS in production/,
+  );
+  assert.equal(
+    loadEnvironment({
+      NODE_ENV: "production",
+      PUBLIC_ORIGIN: "https://game.example.com",
+      DATABASE_URL: "postgresql://postgres:placeholder@localhost:5432/postgres",
+    }).PUBLIC_ORIGIN,
+    "https://game.example.com",
+  );
 });

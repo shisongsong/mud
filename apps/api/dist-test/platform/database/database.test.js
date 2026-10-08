@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyMigrations } from "./migrator.js";
-import { migrations } from "./migrations.js";
+import { postgresMigrations as migrations, trial1GameplayChecksum, trial1GameplaySnapshot, trial1GlossaryChecksum, trial1GlossarySnapshot, } from "./postgres-migrations.js";
 class FakeMigrationDatabase {
     applied = [];
     executed = [];
@@ -63,10 +63,65 @@ test("migration runner rejects duplicate and unordered IDs", async () => {
 test("query migration encodes the MVP aggregate uniqueness and privacy storage", () => {
     const queryMigration = migrations.find(({ id }) => id === "0002_query_aggregates");
     assert.ok(queryMigration);
-    assert.match(queryMigration.sql, /CREATE TABLE \[query\]\.ParticipationSlots/);
-    assert.match(queryMigration.sql, /PRIMARY KEY \(playerId\)/);
-    assert.match(queryMigration.sql, /UQ_QueryActions_player_site/);
-    assert.match(queryMigration.sql, /evidenceText nvarchar\(4000\)/);
-    assert.match(queryMigration.sql, /isTruth bit NOT NULL/);
-    assert.match(queryMigration.sql, /CK_QueryVotes_choice/);
+    assert.match(queryMigration.sql, /CREATE TABLE "query"\."ParticipationSlots"/);
+    assert.match(queryMigration.sql, /"playerId" uuid PRIMARY KEY/);
+    assert.match(queryMigration.sql, /UNIQUE \("queryId", "playerId", "siteId"\)/);
+    assert.match(queryMigration.sql, /"evidenceText" varchar\(4000\)/);
+    assert.match(queryMigration.sql, /"isTruth" boolean NOT NULL/);
+    assert.match(queryMigration.sql, /"choice" IN \('choice_1', 'choice_2', 'abstain'\)/);
+});
+test("outbox dispatch migration adds a positive per-stream cursor", () => {
+    const dispatchMigration = migrations.find(({ id }) => id === "0003_outbox_dispatch_cursor");
+    assert.ok(dispatchMigration);
+    assert.match(dispatchMigration.sql, /ADD COLUMN "nextDispatchSequence" bigint NOT NULL DEFAULT 1/);
+    assert.match(dispatchMigration.sql, /"nextDispatchSequence" > 0/);
+});
+test("identity migration stores credential hashes and revocable session digests", () => {
+    const identityMigration = migrations.find(({ id }) => id === "0004_identity_accounts_sessions");
+    assert.ok(identityMigration);
+    assert.match(identityMigration.sql, /CREATE SCHEMA IF NOT EXISTS "identity"/);
+    assert.match(identityMigration.sql, /"username" varchar\(32\).*UNIQUE/s);
+    assert.match(identityMigration.sql, /"passwordHash" varchar\(255\) NOT NULL/);
+    assert.match(identityMigration.sql, /"sessionHash" char\(64\) PRIMARY KEY/);
+    assert.match(identityMigration.sql, /"csrfHash" char\(64\) NOT NULL/);
+    assert.match(identityMigration.sql, /"accountId" uuid NULL/);
+    assert.match(identityMigration.sql, /"revokedAt" timestamptz\(3\) NULL/);
+});
+test("player migration enforces one profile per account and bounded role fields", () => {
+    const playerMigration = migrations.find(({ id }) => id === "0005_player_profiles");
+    assert.ok(playerMigration);
+    assert.match(playerMigration.sql, /CREATE SCHEMA IF NOT EXISTS "player"/);
+    assert.match(playerMigration.sql, /"accountId" uuid NOT NULL UNIQUE/);
+    assert.match(playerMigration.sql, /REFERENCES "identity"\."Accounts"/);
+    assert.match(playerMigration.sql, /"score" integer NOT NULL DEFAULT 1000/);
+    assert.match(playerMigration.sql, /"aggregateVersion" bigint NOT NULL DEFAULT 1/);
+});
+test("bootstrap release migration seeds immutable versions without replacing pointers", () => {
+    const releaseMigration = migrations.find(({ id }) => id === "0006_bootstrap_releases");
+    assert.ok(releaseMigration);
+    assert.match(releaseMigration.sql, /CREATE TABLE "control"\."ConfigReleases"/);
+    assert.match(releaseMigration.sql, /TR_ConfigReleases_immutable/);
+    assert.match(releaseMigration.sql, /gameplay_bootstrap_v1/);
+    assert.match(releaseMigration.sql, /glossary_bootstrap_v1/);
+    assert.match(releaseMigration.sql, /"queryEnabled":false/);
+    assert.equal((releaseMigration.sql.match(/ON CONFLICT/g) ?? []).length, 2);
+});
+test("trial content migration seeds a checksummed release without activating it", () => {
+    const trialMigration = migrations.find(({ id }) => id === "0007_trial_1_content_release");
+    assert.ok(trialMigration);
+    assert.match(trialMigration.sql, /gameplay_trial_1_v1/);
+    assert.match(trialMigration.sql, /glossary_trial_1_v1/);
+    assert.match(trialMigration.sql, new RegExp(trial1GameplayChecksum));
+    assert.match(trialMigration.sql, new RegExp(trial1GlossaryChecksum));
+    assert.equal(trial1GameplaySnapshot.content.trial_1.variants.length, 2);
+    const messageKeys = [
+        ...trial1GameplaySnapshot.content.trial_1.choices.map(({ messageKey }) => messageKey),
+        ...trial1GameplaySnapshot.content.trial_1.variants.flatMap((variant) => [
+            variant.explanationKey,
+            ...variant.evidence.map(({ messageKey }) => messageKey),
+        ]),
+    ];
+    assert.ok(messageKeys.every((messageKey) => messageKey in trial1GlossarySnapshot.entries));
+    assert.match(trialMigration.sql, /ON CONFLICT \("releaseKind", "releaseId"\) DO NOTHING/);
+    assert.doesNotMatch(trialMigration.sql, /ActiveReleasePointers/);
 });

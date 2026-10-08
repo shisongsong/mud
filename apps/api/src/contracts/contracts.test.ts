@@ -10,12 +10,15 @@ import {
   createQueryRequestSchema,
   createQueryResponseSchema,
   createPlayerRequestSchema,
+  loginRequestSchema,
   leaderboardResponseSchema,
   mfaConfirmRequestSchema,
   moderationRequestSchema,
   notificationListResponseSchema,
   querySnapshotResponseSchema,
+  registerAccountRequestSchema,
   reportAcceptedResponseSchema,
+  sessionViewSchema,
   spreadOperationResponseSchema,
   spreadRequestSchema,
 } from "./http.ts";
@@ -57,6 +60,13 @@ test("actor schema rejects client-injected or unknown authority fields", () => {
   };
 
   assert.equal(actorSchema.safeParse(actor).success, true);
+  assert.equal(
+    actorSchema.safeParse({
+      kind: "account",
+      accountId: "11111111-1111-4111-8111-111111111111",
+    }).success,
+    true,
+  );
   assert.equal(
     actorSchema.safeParse({ ...actor, role: "admin" }).success,
     false,
@@ -151,6 +161,53 @@ test("HTTP schemas reject forged fields and duplicate recipients", () => {
     recipientIds: ["player_1", "player_1"],
   };
   assert.equal(spreadRequestSchema.safeParse(spread).success, false);
+});
+
+test("auth contracts enforce credential limits and session authority shape", () => {
+  const credentials = { username: "Player_01", password: "twelve_chars" };
+  assert.equal(registerAccountRequestSchema.safeParse(credentials).success, true);
+  assert.equal(loginRequestSchema.safeParse(credentials).success, true);
+  assert.equal(
+    registerAccountRequestSchema.safeParse({ ...credentials, role: "admin" })
+      .success,
+    false,
+  );
+  assert.equal(
+    registerAccountRequestSchema.safeParse({
+      username: "ab",
+      password: credentials.password,
+    }).success,
+    false,
+  );
+  assert.equal(
+    registerAccountRequestSchema.safeParse({
+      username: credentials.username,
+      password: "short",
+    }).success,
+    false,
+  );
+  assert.equal(
+    registerAccountRequestSchema.safeParse({
+      username: credentials.username,
+      password: "😀".repeat(129),
+    }).success,
+    false,
+  );
+
+  const anonymousSession = {
+    authenticated: false,
+    expiresAt: "2026-10-08T12:00:00.000Z",
+    csrfToken: "A".repeat(43),
+    mfaRequired: false,
+  };
+  assert.equal(sessionViewSchema.safeParse(anonymousSession).success, true);
+  assert.equal(
+    sessionViewSchema.safeParse({
+      ...anonymousSession,
+      authenticated: true,
+    }).success,
+    false,
+  );
 });
 
 test("display name length counts Unicode code points", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { IdempotencyConflictError, SqlServerCommandReceipts, } from "./command-receipts.js";
+import { IdempotencyConflictError, PostgresCommandReceipts, } from "./command-receipts.js";
 class FakeUnitOfWork {
     receipts = new Map();
     domainWriteCount = 0;
@@ -9,9 +9,9 @@ class FakeUnitOfWork {
         let domainWriteCount = this.domainWriteCount;
         const executor = {
             query: async (statement, parameters = {}) => {
-                if (statement.includes("sp_getapplock"))
+                if (statement.includes("pg_advisory_xact_lock"))
                     return [];
-                if (statement.includes("FROM platform.CommandReceipts")) {
+                if (statement.includes('FROM "platform"."CommandReceipts"')) {
                     const row = receipts.get(receiptKey(parameters));
                     return (row ? [row] : []);
                 }
@@ -19,7 +19,7 @@ class FakeUnitOfWork {
                     domainWriteCount += 1;
                     return [];
                 }
-                if (statement.includes("INSERT INTO platform.CommandReceipts")) {
+                if (statement.includes('INSERT INTO "platform"."CommandReceipts"')) {
                     const key = receiptKey(parameters);
                     receipts.set(key, {
                         requestDigest: String(parameters["requestDigest"]),
@@ -62,7 +62,7 @@ function decodeResult(value) {
 }
 test("same key and digest replays the original response without repeating writes", async () => {
     const unitOfWork = new FakeUnitOfWork();
-    const receipts = new SqlServerCommandReceipts(unitOfWork);
+    const receipts = new PostgresCommandReceipts(unitOfWork);
     let handlerCalls = 0;
     const handle = async (transaction) => {
         handlerCalls += 1;
@@ -77,7 +77,7 @@ test("same key and digest replays the original response without repeating writes
     assert.equal(unitOfWork.domainWriteCount, 1);
 });
 test("same key with a different request digest conflicts", async () => {
-    const receipts = new SqlServerCommandReceipts(new FakeUnitOfWork());
+    const receipts = new PostgresCommandReceipts(new FakeUnitOfWork());
     await receipts.execute(command, decodeResult, async () => ({
         result: { queryId: "query_1" },
     }));
@@ -85,7 +85,7 @@ test("same key with a different request digest conflicts", async () => {
 });
 test("failed domain work commits neither a receipt nor transactional writes", async () => {
     const unitOfWork = new FakeUnitOfWork();
-    const receipts = new SqlServerCommandReceipts(unitOfWork);
+    const receipts = new PostgresCommandReceipts(unitOfWork);
     await assert.rejects(receipts.execute(command, decodeResult, async (transaction) => {
         await transaction.query("INSERT INTO domain.Aggregates");
         throw new Error("domain write failed");
@@ -97,7 +97,7 @@ test("failed domain work commits neither a receipt nor transactional writes", as
     assert.equal(retry.replayed, false);
 });
 test("receipt command rejects malformed identifiers and digests", async () => {
-    const receipts = new SqlServerCommandReceipts(new FakeUnitOfWork());
+    const receipts = new PostgresCommandReceipts(new FakeUnitOfWork());
     await assert.rejects(receipts.execute({ ...command, idempotencyKey: "short" }, decodeResult, async () => ({ result: { queryId: "query_1" } })), /Idempotency key/);
     await assert.rejects(receipts.execute({ ...command, requestDigest: "not-a-digest" }, decodeResult, async () => ({ result: { queryId: "query_1" } })), /SHA-256/);
 });

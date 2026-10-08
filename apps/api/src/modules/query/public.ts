@@ -1,7 +1,9 @@
 export {
   advanceQuery,
+  assertCanInspect,
   castVote,
   createQuery,
+  finalizeSettlement,
   getAuthorizedQueryView,
   inspectQuery,
   joinQuery,
@@ -17,5 +19,6 @@ export type {
   QueryScenario,
   QuerySite,
   QueryVote,
+  SettlementPlan,
 } from "./query.ts";
 export type { QueryRepository } from "./repository.ts";

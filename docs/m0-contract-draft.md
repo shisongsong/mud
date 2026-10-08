@@ -188,15 +188,15 @@ MVP不建立持久WS消息历史；缺口/断线统一重新获取HTTP授权快�
 | 决策 | 当前提案 | 需要的验证/记录 | 状态 |
 |---|---|---|---|
 | 架构 | TypeScript模块化单体；worker独立进程，共享契约 | T01依赖检查 | Accepted设计，未实测 |
-| 持久层 | Supabase PostgreSQL为业务真相；平台适配器使用参数化SQL和版本化迁移，不假设ORM支持 | T03 Supabase连接/TLS/事务/迁移验证 | 用户已指定，尚未实测 |
+| 持久层 | Supabase PostgreSQL为业务真相；平台适配器使用参数化SQL和版本化迁移，不假设ORM支持 | T03 生产TLS身份校验/角色权限/事务语义及隔离测试 | 目标项目连接与当前迁移已实测；其余未实测 |
 | 消息 | PostgreSQL Outbox→归档/delivery；至少一次+幂等 | T05真实Supabase PostgreSQL故障验证 | 设计已采用，未实测 |
 | 配置 | 独立gameplay/glossary激活指针和不可变版本 | T07/T20切换/旧版验证 | Accepted设计，未实测 |
 | 认证 | 同源Cookie、CSRF/Origin、Argon2id、管理TOTP | T09/T20安全验证 | Accepted设计，未实测 |
 | DSL | 数据AST纯解释器，不运行用户代码 | T17/T18预算/拒绝集 | Accepted设计，未实测 |
 | UI | React/Vite/TanStack Query；Zustand仅局部状态按需使用 | T01精确版本及T21浏览器验证 | Accepted设计，未实测 |
-| 支持矩阵 | Node.js/Supabase PostgreSQL/Redis为开发目标；兼容最低版本由T01记录 | T01锁定Node/驱动/Redis客户端精确版本并验证兼容/安全通告 | 目标已采用，数据库未实测 |
+| 支持矩阵 | Node.js/Supabase PostgreSQL/Redis为开发目标；兼容最低版本由T01记录 | T01锁定Node/驱动/Redis客户端精确版本并验证兼容/安全通告 | 目标已采用；Supabase连接/迁移已实测，完整兼容矩阵未完成 |
 
-Node.js/Supabase PostgreSQL/Redis作为首发开发环境。T01/T03确认驱动、连接模式和客户端兼容，选择精确稳定依赖并生成锁文件；审核许可证/安全通告，构建验证后记录兼容清单。PostgreSQL事务/租约/排序/advisory lock语义必须在Supabase实测。
+Node.js/Supabase PostgreSQL/Redis作为首发开发环境。T01/T03确认驱动、连接模式和客户端兼容，选择精确稳定依赖并生成锁文件；审核许可证/安全通告，构建验证后记录兼容清单。当前已在目标Supabase项目成功连接并应用迁移；PostgreSQL事务/租约/排序/advisory lock语义仍必须通过隔离Supabase集成测试验证。
 
 ## 9. M0最小风险验证方案（不执行）
 

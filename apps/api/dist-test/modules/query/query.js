@@ -30,6 +30,7 @@ export function createQuery(queryId, creatorPlayerId, gameplayReleaseId, now) {
         actions: [],
         votes: [],
         selectedChoice: null,
+        settlementPlan: null,
     };
 }
 export function joinQuery(query, playerId, now, createScenario) {
@@ -61,12 +62,16 @@ export function joinQuery(query, playerId, now, createScenario) {
         scenario,
     };
 }
-export function leaveQuery(query, playerId, expectedVersion) {
+export function leaveQuery(query, playerId, expectedVersion, now) {
+    requireTimestamp(now);
     if (query.phase !== "waiting") {
         throw new QueryRuleError("QUERY_ALREADY_STARTED");
     }
     if (query.version !== expectedVersion) {
         throw new QueryRuleError("INVALID_EXPECTED_VERSION");
+    }
+    if (query.deadline === null || now >= query.deadline) {
+        throw new QueryRuleError("QUERY_EXPIRED");
     }
     if (!query.participants.some((participant) => participant.playerId === playerId)) {
         throw new QueryRuleError("QUERY_NOT_MEMBER");
@@ -80,7 +85,12 @@ export function leaveQuery(query, playerId, expectedVersion) {
         deadline: participants.length === 0 ? null : query.deadline,
     };
 }
-export function inspectQuery(query, playerId, siteId, now, createEvidence) {
+/**
+ * Validates every inspect rule without producing evidence. Callers that need
+ * to resolve evidence from storage should call this first so rule violations
+ * are reported before any lookup.
+ */
+export function assertCanInspect(query, playerId, siteId, now) {
     requireTimestamp(now);
     if (query.phase !== "exploring") {
         throw new QueryRuleError("QUERY_NOT_EXPLORING");
@@ -96,11 +106,14 @@ export function inspectQuery(query, playerId, siteId, now, createEvidence) {
     if (playerActions.length >= MAX_ACTIONS_PER_PLAYER) {
         throw new QueryRuleError("ACTION_LIMIT_REACHED");
     }
+}
+export function inspectQuery(query, playerId, siteId, now, createEvidence) {
+    assertCanInspect(query, playerId, siteId, now);
     const card = createEvidence();
     if (card.playerId !== playerId ||
         card.siteId !== siteId ||
-        card.cardId.length === 0 ||
-        card.text.length === 0) {
+        card.cardId.trim().length === 0 ||
+        card.text.trim().length === 0) {
         throw new QueryRuleError("INVALID_SCENARIO");
     }
     return {
@@ -142,23 +155,40 @@ export function advanceQuery(query, now) {
             throw new QueryRuleError("INVALID_SCENARIO");
         }
         const votingDeadline = explorationStartedAt + EXPLORATION_DURATION_MS + VOTING_DURATION_MS;
-        const next = {
+        return {
             ...query,
-            phase: now >= votingDeadline ? "settling" : "voting",
-            deadline: now >= votingDeadline ? null : votingDeadline,
+            phase: "voting",
+            deadline: votingDeadline,
             version: query.version + 1,
         };
-        return next.phase === "settling" ? resolveVote(next) : next;
     }
     if (query.phase === "voting") {
-        return resolveVote({
+        const settling = resolveVote({
             ...query,
             phase: "settling",
             deadline: null,
             version: query.version + 1,
         });
+        return { ...settling, settlementPlan: buildSettlementPlan(settling) };
     }
     return query;
+}
+export function finalizeSettlement(query, confirmedEffectKeys) {
+    if (query.phase !== "settling") {
+        throw new QueryRuleError("QUERY_NOT_SETTLING");
+    }
+    if (query.settlementPlan === null) {
+        throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+    }
+    const planned = new Set(query.settlementPlan.targets);
+    const confirmed = new Set(confirmedEffectKeys);
+    if ([...confirmed].some((key) => !planned.has(key))) {
+        throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+    }
+    if ([...planned].some((key) => !confirmed.has(key))) {
+        throw new QueryRuleError("SETTLEMENT_INCOMPLETE");
+    }
+    return { ...query, phase: "completed", version: query.version + 1 };
 }
 export function getAuthorizedQueryView(query, playerId) {
     requireParticipant(query, playerId);
@@ -180,6 +210,15 @@ export function getAuthorizedQueryView(query, playerId) {
         })),
     };
 }
+// Fixed at resolution so retries reuse the same targets and never re-roll them.
+function buildSettlementPlan(query) {
+    const targets = [
+        `board:${query.queryId}`,
+        ...query.participants.map(({ playerId }) => `points:${query.queryId}:${playerId}`),
+        ...query.actions.map(({ card }) => `knowledge:${query.queryId}:${card.cardId}`),
+    ].sort();
+    return { settlementId: `settlement:${query.queryId}`, targets };
+}
 function resolveVote(query) {
     if (query.scenario === null)
         throw new QueryRuleError("INVALID_SCENARIO");
@@ -196,8 +235,10 @@ function resolveVote(query) {
     return { ...query, selectedChoice };
 }
 function validateScenario(scenario) {
-    if (scenario.variantId.length === 0 ||
-        scenario.randomSeed.length === 0 ||
+    const seedByteLength = new TextEncoder().encode(scenario.randomSeed).length;
+    if (scenario.variantId.trim().length === 0 ||
+        scenario.randomSeed.trim().length === 0 ||
+        seedByteLength > 64 ||
         (scenario.correctChoice !== "choice_1" &&
             scenario.correctChoice !== "choice_2")) {
         throw new QueryRuleError("INVALID_SCENARIO");

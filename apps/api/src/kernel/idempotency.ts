@@ -23,6 +23,8 @@ function actorScopeKey(actor: Actor): string {
   switch (actor.kind) {
     case "player":
       return `player:${actor.accountId}:${actor.playerId}`;
+    case "account":
+      return `account:${actor.accountId}`;
     case "management":
       return `management:${actor.accountId}`;
     case "service":

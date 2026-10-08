@@ -1,6 +1,6 @@
 # ADR-0006：Supabase托管PostgreSQL作为MVP持久层
 
-- 状态：Accepted（用户于2026-10-08明确指定Supabase；数据库连接/迁移尚未执行）
+- 状态：Accepted（用户于2026-10-08明确指定Supabase；2026-10-08已连接目标项目并成功应用当前迁移）
 - 日期：2026-10-08
 - 影响：T01、T03–T06及所有持久化模块
 - Supersedes：ADR-0002中关于SQL Server/T-SQL及拒绝PostgreSQL锁语法的技术实现选择；保留其Outbox/Inbox与至少一次投递语义。
@@ -21,7 +21,7 @@
 
 ## 实施和验证边界
 
-当前代码已增加`pg`池、Postgres UnitOfWork、事务级advisory lock、Query仓储方言和PostgreSQL schema迁移。已观察到Pooler DNS/TCP可达，但尚未完成经验证TLS认证、数据库认证或迁移；没有schema变更应用。Fake测试不等于PostgreSQL集成测试。迁移前必须确认目标项目为空库或完成备份/数据迁移决定；不假设旧SQL Server schema或数据自动迁移。
+当前代码已增加`pg`池、Postgres UnitOfWork、事务级advisory lock、Query仓储方言和PostgreSQL schema迁移。2026-10-08已通过本地`DATABASE_URL`连接目标Supabase项目并成功应用当前迁移，随后重复运行报告schema up to date；用户在Dashboard确认`platform`与`query`下的迁移表存在。该次development连接使用`rejectUnauthorized: false`，只证明TLS连接、数据库认证和迁移SQL可运行，不证明服务端证书身份校验、生产角色权限或并发语义。Fake测试不等于PostgreSQL集成测试；不假设旧SQL Server schema或数据自动迁移。
 
 T03/T04后续必须在临时或受控Supabase项目验证：TLS/DNS/直连或pooler模式、两项迁移原子性与重复运行、角色权限、bytea/UUID/timestamptz/json映射、receipt并发重试、CAS冲突、回滚和连接池限制。未通过前禁止将数据库适配标记为生产验证完成。
 

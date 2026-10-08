@@ -37,6 +37,11 @@ interface QueryParticipant {
   readonly joinedAt: number;
 }
 
+export interface SettlementPlan {
+  readonly settlementId: string;
+  readonly targets: readonly string[];
+}
+
 export interface QueryAggregate {
   readonly queryId: string;
   readonly createdByPlayerId: string;
@@ -54,6 +59,7 @@ export interface QueryAggregate {
     readonly choice: QueryVote;
   }[];
   readonly selectedChoice: QueryChoice | null;
+  readonly settlementPlan: SettlementPlan | null;
 }
 
 export interface AuthorizedQueryView {
@@ -93,7 +99,10 @@ export class QueryRuleError extends Error {
       | "SITE_ALREADY_INSPECTED"
       | "INVALID_EXPECTED_VERSION"
       | "INVALID_SCENARIO"
-      | "QUERY_NOT_FOUND",
+      | "QUERY_NOT_FOUND"
+      | "QUERY_NOT_SETTLING"
+      | "SETTLEMENT_INCOMPLETE"
+      | "SETTLEMENT_PLAN_MISMATCH",
   ) {
     super(code);
     this.name = "QueryRuleError";
@@ -125,6 +134,7 @@ export function createQuery(
     actions: [],
     votes: [],
     selectedChoice: null,
+    settlementPlan: null,
   };
 }
 
@@ -200,13 +210,17 @@ export function leaveQuery(
   };
 }
 
-export function inspectQuery(
+/**
+ * Validates every inspect rule without producing evidence. Callers that need
+ * to resolve evidence from storage should call this first so rule violations
+ * are reported before any lookup.
+ */
+export function assertCanInspect(
   query: QueryAggregate,
   playerId: string,
   siteId: QuerySite,
   now: number,
-  createEvidence: () => PrivateEvidenceCard,
-): QueryAggregate {
+): void {
   requireTimestamp(now);
   if (query.phase !== "exploring") {
     throw new QueryRuleError("QUERY_NOT_EXPLORING");
@@ -225,6 +239,16 @@ export function inspectQuery(
   if (playerActions.length >= MAX_ACTIONS_PER_PLAYER) {
     throw new QueryRuleError("ACTION_LIMIT_REACHED");
   }
+}
+
+export function inspectQuery(
+  query: QueryAggregate,
+  playerId: string,
+  siteId: QuerySite,
+  now: number,
+  createEvidence: () => PrivateEvidenceCard,
+): QueryAggregate {
+  assertCanInspect(query, playerId, siteId, now);
 
   const card = createEvidence();
   if (
@@ -295,15 +319,39 @@ export function advanceQuery(
     };
   }
   if (query.phase === "voting") {
-    return resolveVote({
+    const settling = resolveVote({
       ...query,
       phase: "settling",
       deadline: null,
       version: query.version + 1,
     });
+    return { ...settling, settlementPlan: buildSettlementPlan(settling) };
   }
 
   return query;
+}
+
+export function finalizeSettlement(
+  query: QueryAggregate,
+  confirmedEffectKeys: readonly string[],
+): QueryAggregate {
+  if (query.phase !== "settling") {
+    throw new QueryRuleError("QUERY_NOT_SETTLING");
+  }
+  if (query.settlementPlan === null) {
+    throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+  }
+
+  const planned = new Set(query.settlementPlan.targets);
+  const confirmed = new Set(confirmedEffectKeys);
+  if ([...confirmed].some((key) => !planned.has(key))) {
+    throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+  }
+  if ([...planned].some((key) => !confirmed.has(key))) {
+    throw new QueryRuleError("SETTLEMENT_INCOMPLETE");
+  }
+
+  return { ...query, phase: "completed", version: query.version + 1 };
 }
 
 export function getAuthorizedQueryView(
@@ -331,6 +379,20 @@ export function getAuthorizedQueryView(
       text: card.text,
     })),
   };
+}
+
+// Fixed at resolution so retries reuse the same targets and never re-roll them.
+function buildSettlementPlan(query: QueryAggregate): SettlementPlan {
+  const targets = [
+    `board:${query.queryId}`,
+    ...query.participants.map(
+      ({ playerId }) => `points:${query.queryId}:${playerId}`,
+    ),
+    ...query.actions.map(
+      ({ card }) => `knowledge:${query.queryId}:${card.cardId}`,
+    ),
+  ].sort();
+  return { settlementId: `settlement:${query.queryId}`, targets };
 }
 
 function resolveVote(query: QueryAggregate): QueryAggregate {

@@ -20,8 +20,15 @@ export const serviceActorSchema = z
     serviceId: z.enum(["api", "worker", "migration"]),
 })
     .strict();
+export const accountActorSchema = z
+    .object({
+    kind: z.literal("account"),
+    accountId: uuidSchema,
+})
+    .strict();
 export const actorSchema = z.discriminatedUnion("kind", [
     playerActorSchema,
+    accountActorSchema,
     managementActorSchema,
     serviceActorSchema,
 ]);

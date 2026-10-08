@@ -4,7 +4,7 @@ import { actorSchema } from "../kernel/actor.js";
 import { commandMetadataSchema, idempotencyKeySchema } from "./command.js";
 import { apiErrorSchema } from "./errors.js";
 import { eventEnvelopeSchema } from "./event.js";
-import { adminSagaListRequestSchema, boardSnapshotResponseSchema, createPlayerRequestSchema, leaderboardResponseSchema, mfaConfirmRequestSchema, moderationRequestSchema, notificationListResponseSchema, querySnapshotResponseSchema, reportAcceptedResponseSchema, spreadOperationResponseSchema, spreadRequestSchema, } from "./http.js";
+import { adminSagaListRequestSchema, boardSnapshotResponseSchema, createQueryRequestSchema, createQueryResponseSchema, createPlayerRequestSchema, loginRequestSchema, leaderboardResponseSchema, mfaConfirmRequestSchema, moderationRequestSchema, notificationListResponseSchema, querySnapshotResponseSchema, registerAccountRequestSchema, reportAcceptedResponseSchema, sessionViewSchema, spreadOperationResponseSchema, spreadRequestSchema, } from "./http.js";
 import { clientWebSocketMessageSchema } from "./websocket.js";
 const validEvent = {
     eventId: "11111111-1111-4111-8111-111111111111",
@@ -36,6 +36,10 @@ test("actor schema rejects client-injected or unknown authority fields", () => {
         playerId: "22222222-2222-4222-8222-222222222222",
     };
     assert.equal(actorSchema.safeParse(actor).success, true);
+    assert.equal(actorSchema.safeParse({
+        kind: "account",
+        accountId: "11111111-1111-4111-8111-111111111111",
+    }).success, true);
     assert.equal(actorSchema.safeParse({ ...actor, role: "admin" }).success, false);
 });
 test("trusted command metadata is strict", () => {
@@ -99,6 +103,36 @@ test("HTTP schemas reject forged fields and duplicate recipients", () => {
     };
     assert.equal(spreadRequestSchema.safeParse(spread).success, false);
 });
+test("auth contracts enforce credential limits and session authority shape", () => {
+    const credentials = { username: "Player_01", password: "twelve_chars" };
+    assert.equal(registerAccountRequestSchema.safeParse(credentials).success, true);
+    assert.equal(loginRequestSchema.safeParse(credentials).success, true);
+    assert.equal(registerAccountRequestSchema.safeParse({ ...credentials, role: "admin" })
+        .success, false);
+    assert.equal(registerAccountRequestSchema.safeParse({
+        username: "ab",
+        password: credentials.password,
+    }).success, false);
+    assert.equal(registerAccountRequestSchema.safeParse({
+        username: credentials.username,
+        password: "short",
+    }).success, false);
+    assert.equal(registerAccountRequestSchema.safeParse({
+        username: credentials.username,
+        password: "😀".repeat(129),
+    }).success, false);
+    const anonymousSession = {
+        authenticated: false,
+        expiresAt: "2026-10-08T12:00:00.000Z",
+        csrfToken: "A".repeat(43),
+        mfaRequired: false,
+    };
+    assert.equal(sessionViewSchema.safeParse(anonymousSession).success, true);
+    assert.equal(sessionViewSchema.safeParse({
+        ...anonymousSession,
+        authenticated: true,
+    }).success, false);
+});
 test("display name length counts Unicode code points", () => {
     const player = {
         displayName: "😀😀",
@@ -108,6 +142,25 @@ test("display name length counts Unicode code points", () => {
         gameplayReleaseId: "gameplay_v1",
     };
     assert.equal(createPlayerRequestSchema.safeParse(player).success, true);
+});
+test("create-query contract pins the supported template and minimal response", () => {
+    assert.equal(createQueryRequestSchema.safeParse({
+        templateId: "trial_1",
+        gameplayReleaseId: "gameplay_v1",
+    }).success, true);
+    assert.equal(createQueryRequestSchema.safeParse({
+        templateId: "trial_2",
+        gameplayReleaseId: "gameplay_v1",
+    }).success, false);
+    assert.equal(createQueryResponseSchema.safeParse({
+        queryId: "11111111-1111-4111-8111-111111111111",
+        aggregateVersion: 1,
+    }).success, true);
+    assert.equal(createQueryResponseSchema.safeParse({
+        queryId: "11111111-1111-4111-8111-111111111111",
+        aggregateVersion: 1,
+        correctChoice: "choice_1",
+    }).success, false);
 });
 test("remaining HTTP contracts validate safe requests and public responses", () => {
     assert.equal(adminSagaListRequestSchema.safeParse({ status: "running", limit: "10" })

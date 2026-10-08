@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { advanceQuery, castVote, createQuery, getAuthorizedQueryView, inspectQuery, joinQuery, leaveQuery, QueryRuleError, } from "./public.js";
+import { advanceQuery, castVote, createQuery, finalizeSettlement, getAuthorizedQueryView, inspectQuery, joinQuery, leaveQuery, QueryRuleError, } from "./public.js";
 const scenario = {
     variantId: "trial_1_variant_a",
     randomSeed: "seed_audit_1",
@@ -29,19 +29,27 @@ test("fourth confirmed player starts exploring and pins one scenario", () => {
     assert.equal(scenarioSelections, 1);
     assert.throws(() => joinQuery(query, "player_5", 31, () => scenario), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_WAITING");
 });
+test("scenario random seed must fit its durable binary column", () => {
+    const invalidScenario = { ...scenario, randomSeed: "x".repeat(65) };
+    let query = createQuery("query_1", "player_1", "gameplay_v1", 0);
+    query = joinQuery(query, "player_2", 1, () => invalidScenario);
+    query = joinQuery(query, "player_3", 2, () => invalidScenario);
+    assert.throws(() => joinQuery(query, "player_4", 3, () => invalidScenario), (error) => error instanceof QueryRuleError && error.code === "INVALID_SCENARIO");
+});
 test("waiting query leaves and times out without changing membership incorrectly", () => {
     const created = createQuery("query_1", "player_1", "gameplay_v1", 0);
     const withSecond = joinQuery(created, "player_2", 1, () => scenario);
-    const afterLeave = leaveQuery(withSecond, "player_1", withSecond.version);
+    const afterLeave = leaveQuery(withSecond, "player_1", withSecond.version, 2);
     assert.equal(afterLeave.phase, "waiting");
     assert.deepEqual(afterLeave.participants.map(({ playerId }) => playerId), ["player_2"]);
     assert.equal(advanceQuery(afterLeave, 300_000).phase, "cancelled");
     assert.equal(advanceQuery(created, 299_999).phase, "waiting");
-    assert.equal(leaveQuery(created, "player_1", created.version).phase, "cancelled");
+    assert.equal(leaveQuery(created, "player_1", created.version, 1).phase, "cancelled");
     const started = fullQuery();
-    assert.throws(() => leaveQuery(started, "player_1", started.version), (error) => error instanceof QueryRuleError && error.code === "QUERY_ALREADY_STARTED");
-    assert.throws(() => leaveQuery(withSecond, "player_1", created.version), (error) => error instanceof QueryRuleError &&
+    assert.throws(() => leaveQuery(started, "player_1", started.version, 1_001), (error) => error instanceof QueryRuleError && error.code === "QUERY_ALREADY_STARTED");
+    assert.throws(() => leaveQuery(withSecond, "player_1", created.version, 2), (error) => error instanceof QueryRuleError &&
         error.code === "INVALID_EXPECTED_VERSION");
+    assert.throws(() => leaveQuery(created, "player_1", created.version, created.deadline), (error) => error instanceof QueryRuleError && error.code === "QUERY_EXPIRED");
 });
 test("inspect is private, bounded, and rejected at the exact deadline", () => {
     const query = fullQuery();
@@ -77,6 +85,19 @@ test("phase deadlines are fixed and vote replacement follows aggregate version",
         error.code === "INVALID_EXPECTED_VERSION");
     assert.throws(() => castVote(replacedVote, "player_2", "abstain", replacedVote.version, replacedVote.deadline), (error) => error instanceof QueryRuleError && error.code === "QUERY_EXPIRED");
 });
+test("a delayed worker advances through voting before settling", () => {
+    const exploring = fullQuery(10_000);
+    const explorationDeadline = exploring.deadline;
+    const votingDeadline = explorationDeadline + 60_000;
+    const delayedExplorationTransition = advanceQuery(exploring, votingDeadline + 1);
+    assert.equal(delayedExplorationTransition.phase, "voting");
+    assert.equal(delayedExplorationTransition.deadline, votingDeadline);
+    assert.equal(delayedExplorationTransition.version, exploring.version + 1);
+    const settled = advanceQuery(delayedExplorationTransition, votingDeadline + 1);
+    assert.equal(settled.phase, "settling");
+    assert.equal(settled.deadline, null);
+    assert.equal(settled.version, delayedExplorationTransition.version + 1);
+});
 test("deadline resolution uses choice_1 for a nonempty tie and null for all abstentions", () => {
     const exploring = fullQuery(1_000);
     const voting = advanceQuery(exploring, 121_000);
@@ -88,4 +109,35 @@ test("deadline resolution uses choice_1 for a nonempty tie and null for all abst
     const noVotesResolved = advanceQuery(voting, voting.deadline);
     assert.equal(noVotesResolved.phase, "settling");
     assert.equal(noVotesResolved.selectedChoice, null);
+});
+test("settlement completes only after every planned effect is confirmed", () => {
+    let query = fullQuery(10_000);
+    query = inspectQuery(query, "player_1", "site_1", 10_001, () => ({
+        cardId: "card_1",
+        playerId: "player_1",
+        siteId: "site_1",
+        text: "A private clue",
+        isTruth: true,
+    }));
+    query = advanceQuery(query, 130_000);
+    assert.throws(() => finalizeSettlement(query, []), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING");
+    query = advanceQuery(query, 190_000);
+    const plan = query.settlementPlan;
+    assert.equal(query.phase, "settling");
+    assert.deepEqual(plan?.targets, [
+        "board:query_1",
+        "knowledge:query_1:card_1",
+        "points:query_1:player_1",
+        "points:query_1:player_2",
+        "points:query_1:player_3",
+        "points:query_1:player_4",
+    ]);
+    const targets = plan?.targets ?? [];
+    assert.throws(() => finalizeSettlement(query, targets.slice(1)), (error) => error instanceof QueryRuleError && error.code === "SETTLEMENT_INCOMPLETE");
+    assert.throws(() => finalizeSettlement(query, [...targets, "knowledge:query_1:forged"]), (error) => error instanceof QueryRuleError &&
+        error.code === "SETTLEMENT_PLAN_MISMATCH");
+    const completed = finalizeSettlement(query, [...targets].reverse());
+    assert.equal(completed.phase, "completed");
+    assert.equal(completed.version, query.version + 1);
+    assert.throws(() => finalizeSettlement(completed, targets), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING");
 });

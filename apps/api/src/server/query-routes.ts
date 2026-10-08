@@ -6,25 +6,42 @@ import {
   castVoteRequestSchema,
   createQueryRequestSchema,
   createQueryResponseSchema,
+  joinQueryResponseSchema,
   leaveQueryRequestSchema,
+  querySnapshotResponseSchema,
+  submitActionRequestSchema,
   writeReceiptSchema,
 } from "../contracts/http.ts";
 import type {
   CastVoteRequest,
   CreateQueryRequest,
   CreateQueryResponse,
+  JoinQueryResponse,
   LeaveQueryRequest,
+  QuerySnapshotResponse,
+  SubmitActionRequest,
 } from "../contracts/http.ts";
 import { uuidSchema } from "../contracts/identifiers.ts";
 import type { PlayerActor } from "../kernel/actor.ts";
+import { QueryRuleError } from "../modules/query/public.ts";
 
 export interface QueryCreationCommand {
   create(
     actor: PlayerActor,
     input: CreateQueryRequest,
     idempotencyKey: string,
+    traceId?: string,
   ): Promise<{
     readonly result: CreateQueryResponse;
+    readonly replayed: boolean;
+  }>;
+  join?(
+    actor: PlayerActor,
+    queryId: string,
+    idempotencyKey: string,
+    traceId?: string,
+  ): Promise<{
+    readonly result: JoinQueryResponse;
     readonly replayed: boolean;
   }>;
   leave?(
@@ -32,6 +49,7 @@ export interface QueryCreationCommand {
     queryId: string,
     input: LeaveQueryRequest,
     idempotencyKey: string,
+    traceId?: string,
   ): Promise<{
     readonly result: {
       readonly resourceId: string;
@@ -44,6 +62,20 @@ export interface QueryCreationCommand {
     queryId: string,
     input: CastVoteRequest,
     idempotencyKey: string,
+    traceId?: string,
+  ): Promise<{
+    readonly result: {
+      readonly resourceId: string;
+      readonly aggregateVersion: number;
+    };
+    readonly replayed: boolean;
+  }>;
+  inspect?(
+    actor: PlayerActor,
+    queryId: string,
+    input: SubmitActionRequest,
+    idempotencyKey: string,
+    traceId?: string,
   ): Promise<{
     readonly result: {
       readonly resourceId: string;
@@ -53,8 +85,16 @@ export interface QueryCreationCommand {
   }>;
 }
 
+export interface QueryViewReader {
+  getSnapshot(
+    actor: PlayerActor,
+    queryId: string,
+  ): Promise<QuerySnapshotResponse | null>;
+}
+
 export interface QueryRouteDependencies {
   readonly commands: QueryCreationCommand;
+  readonly views?: QueryViewReader;
   readonly authenticatePlayer: (
     request: FastifyRequest,
   ) => Promise<PlayerActor | null>;
@@ -66,7 +106,17 @@ export function registerQueryRoutes(
 ): void {
   app.post("/queries", async (request, reply) => {
     const traceId = randomUUID();
-    const actor = await dependencies.authenticatePlayer(request);
+    let actor: PlayerActor | null;
+    try {
+      actor = await dependencies.authenticatePlayer(request);
+    } catch {
+      return reply.code(503).send({
+        code: "AUTH_UNAVAILABLE",
+        messageKey: "auth.unavailable",
+        args: {},
+        traceId,
+      });
+    }
     if (actor === null) {
       return reply.code(401).send({
         code: "UNAUTHENTICATED",
@@ -102,11 +152,28 @@ export function registerQueryRoutes(
         actor,
         parsedBody.data,
         parsedKey.data,
+        traceId,
       );
       const result = createQueryResponseSchema.parse(execution.result);
       reply.header("Location", `/queries/${result.queryId}`);
       return reply.code(execution.replayed ? 200 : 201).send(result);
     } catch (error: unknown) {
+      if (hasErrorCode(error, "GAMEPLAY_NOT_READY")) {
+        return reply.code(503).send({
+          code: "GAMEPLAY_NOT_READY",
+          messageKey: "gameplay.notReady",
+          args: {},
+          traceId,
+        });
+      }
+      if (hasErrorCode(error, "GAMEPLAY_RELEASE_CHANGED")) {
+        return reply.code(409).send({
+          code: "GAMEPLAY_RELEASE_CHANGED",
+          messageKey: "gameplay.releaseChanged",
+          args: {},
+          traceId,
+        });
+      }
       if (hasErrorCode(error, "IDEMPOTENCY_CONFLICT")) {
         return reply.code(409).send({
           code: "IDEMPOTENCY_CONFLICT",
@@ -125,11 +192,61 @@ export function registerQueryRoutes(
     }
   });
 
-  const leaveCommand = dependencies.commands.leave;
+  const joinCommand = dependencies.commands.join?.bind(dependencies.commands);
+  if (joinCommand) {
+    app.post("/query/:queryId/join", async (request, reply) => {
+      const traceId = randomUUID();
+      let actor: PlayerActor | null;
+      try {
+        actor = await dependencies.authenticatePlayer(request);
+      } catch {
+        return reply.code(503).send({
+          code: "AUTH_UNAVAILABLE",
+          messageKey: "auth.unavailable",
+          args: {},
+          traceId,
+        });
+      }
+      if (!actor) return sendUnauthenticated(reply, traceId);
+
+      const params = queryIdParamsSchema.safeParse(request.params);
+      const idempotencyKey = parseIdempotencyKey(
+        request.headers["idempotency-key"],
+      );
+      if (!params.success || idempotencyKey === null) {
+        return sendInvalidRequest(reply, traceId);
+      }
+
+      try {
+        const execution = await joinCommand(
+          actor,
+          params.data.queryId,
+          idempotencyKey,
+          traceId,
+        );
+        const result = joinQueryResponseSchema.parse(execution.result);
+        return reply.code(200).send(result);
+      } catch (error: unknown) {
+        return sendCommandError(request, reply, error, traceId);
+      }
+    });
+  }
+
+  const leaveCommand = dependencies.commands.leave?.bind(dependencies.commands);
   if (leaveCommand) {
     app.post("/query/:queryId/leave", async (request, reply) => {
       const traceId = randomUUID();
-      const actor = await dependencies.authenticatePlayer(request);
+      let actor: PlayerActor | null;
+      try {
+        actor = await dependencies.authenticatePlayer(request);
+      } catch {
+        return reply.code(503).send({
+          code: "AUTH_UNAVAILABLE",
+          messageKey: "auth.unavailable",
+          args: {},
+          traceId,
+        });
+      }
       if (!actor) return sendUnauthenticated(reply, traceId);
 
       const params = queryIdParamsSchema.safeParse(request.params);
@@ -147,6 +264,7 @@ export function registerQueryRoutes(
           params.data.queryId,
           body.data,
           idempotencyKey,
+          traceId,
         );
         return reply.code(200).send(writeReceiptSchema.parse(execution.result));
       } catch (error: unknown) {
@@ -155,11 +273,103 @@ export function registerQueryRoutes(
     });
   }
 
-  const voteCommand = dependencies.commands.vote;
+  const inspectCommand = dependencies.commands.inspect?.bind(
+    dependencies.commands,
+  );
+  if (inspectCommand) {
+    app.post("/query/:queryId/inspect", async (request, reply) => {
+      const traceId = randomUUID();
+      let actor: PlayerActor | null;
+      try {
+        actor = await dependencies.authenticatePlayer(request);
+      } catch {
+        return reply.code(503).send({
+          code: "AUTH_UNAVAILABLE",
+          messageKey: "auth.unavailable",
+          args: {},
+          traceId,
+        });
+      }
+      if (!actor) return sendUnauthenticated(reply, traceId);
+
+      const params = queryIdParamsSchema.safeParse(request.params);
+      const body = submitActionRequestSchema.safeParse(request.body);
+      const idempotencyKey = parseIdempotencyKey(
+        request.headers["idempotency-key"],
+      );
+      if (!params.success || !body.success || idempotencyKey === null) {
+        return sendInvalidRequest(reply, traceId);
+      }
+
+      try {
+        const execution = await inspectCommand(
+          actor,
+          params.data.queryId,
+          body.data,
+          idempotencyKey,
+          traceId,
+        );
+        return reply.code(200).send(writeReceiptSchema.parse(execution.result));
+      } catch (error: unknown) {
+        return sendCommandError(request, reply, error, traceId);
+      }
+    });
+  }
+
+  const views = dependencies.views;
+  if (views) {
+    app.get("/query/:queryId", async (request, reply) => {
+      const traceId = randomUUID();
+      let actor: PlayerActor | null;
+      try {
+        actor = await dependencies.authenticatePlayer(request);
+      } catch {
+        return reply.code(503).send({
+          code: "AUTH_UNAVAILABLE",
+          messageKey: "auth.unavailable",
+          args: {},
+          traceId,
+        });
+      }
+      if (!actor) return sendUnauthenticated(reply, traceId);
+
+      const params = queryIdParamsSchema.safeParse(request.params);
+      if (!params.success) return sendInvalidRequest(reply, traceId);
+
+      try {
+        const snapshot = await views.getSnapshot(actor, params.data.queryId);
+        if (snapshot === null) {
+          return reply.code(404).send({
+            code: "NOT_FOUND",
+            messageKey: "api.not_found",
+            args: {},
+            traceId,
+          });
+        }
+        return reply
+          .code(200)
+          .send(querySnapshotResponseSchema.parse(snapshot));
+      } catch (error: unknown) {
+        return sendCommandError(request, reply, error, traceId);
+      }
+    });
+  }
+
+  const voteCommand = dependencies.commands.vote?.bind(dependencies.commands);
   if (voteCommand) {
     app.post("/query/:queryId/vote", async (request, reply) => {
       const traceId = randomUUID();
-      const actor = await dependencies.authenticatePlayer(request);
+      let actor: PlayerActor | null;
+      try {
+        actor = await dependencies.authenticatePlayer(request);
+      } catch {
+        return reply.code(503).send({
+          code: "AUTH_UNAVAILABLE",
+          messageKey: "auth.unavailable",
+          args: {},
+          traceId,
+        });
+      }
       if (!actor) return sendUnauthenticated(reply, traceId);
 
       const params = queryIdParamsSchema.safeParse(request.params);
@@ -177,6 +387,7 @@ export function registerQueryRoutes(
           params.data.queryId,
           body.data,
           idempotencyKey,
+          traceId,
         );
         return reply.code(200).send(writeReceiptSchema.parse(execution.result));
       } catch (error: unknown) {
@@ -217,6 +428,22 @@ function sendCommandError(
   error: unknown,
   traceId: string,
 ) {
+  if (hasErrorCode(error, "GAMEPLAY_NOT_READY")) {
+    return reply.code(503).send({
+      code: "GAMEPLAY_NOT_READY",
+      messageKey: "gameplay.notReady",
+      args: {},
+      traceId,
+    });
+  }
+  if (hasErrorCode(error, "GAMEPLAY_RELEASE_CHANGED")) {
+    return reply.code(409).send({
+      code: "GAMEPLAY_RELEASE_CHANGED",
+      messageKey: "gameplay.releaseChanged",
+      args: {},
+      traceId,
+    });
+  }
   if (hasErrorCode(error, "IDEMPOTENCY_CONFLICT")) {
     return reply.code(409).send({
       code: "IDEMPOTENCY_CONFLICT",
@@ -271,21 +498,24 @@ function hasErrorName(error: unknown, name: string): boolean {
   );
 }
 
-function hasErrorCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === code
-  );
-}
-
 function hasQueryRuleCode(error: unknown): boolean {
+  if (error instanceof QueryRuleError) {
+    return true;
+  }
   return (
     typeof error === "object" &&
     error !== null &&
     "code" in error &&
     typeof error.code === "string" &&
     error.code.startsWith("QUERY_")
+  );
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === code
   );
 }
