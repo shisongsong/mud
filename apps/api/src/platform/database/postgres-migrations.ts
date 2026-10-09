@@ -459,4 +459,32 @@ CREATE TABLE "query"."SettlementPointAwards" (
 );
 `,
   },
+  {
+    id: "0012_script_knowledge",
+    sql: `
+CREATE SCHEMA IF NOT EXISTS "script";
+CREATE TABLE "script"."Scripts" (
+  "scriptId" uuid PRIMARY KEY,
+  "queryId" uuid NOT NULL REFERENCES "query"."QueryRooms"("queryId") ON DELETE CASCADE,
+  "playerId" uuid NOT NULL,
+  "cardId" uuid NOT NULL UNIQUE REFERENCES "query"."QueryActions"("cardId") ON DELETE CASCADE,
+  "contentText" varchar(4000) NOT NULL CHECK (length(btrim("contentText")) > 0),
+  "gameplayReleaseId" varchar(128) NOT NULL,
+  "createdAt" timestamptz(3) NOT NULL,
+  UNIQUE ("queryId", "playerId", "cardId"),
+  FOREIGN KEY ("queryId", "playerId")
+    REFERENCES "query"."QueryParticipants"("queryId", "playerId") ON DELETE CASCADE
+);
+CREATE TABLE "script"."PlayerKnowledge" (
+  "grantId" uuid PRIMARY KEY,
+  "scriptId" uuid NOT NULL REFERENCES "script"."Scripts"("scriptId") ON DELETE CASCADE,
+  "playerId" uuid NOT NULL REFERENCES "player"."Players"("playerId") ON DELETE CASCADE,
+  "sourceRef" varchar(256) NOT NULL CHECK (length(btrim("sourceRef")) > 0),
+  "grantedAt" timestamptz(3) NOT NULL,
+  UNIQUE ("scriptId", "playerId", "sourceRef")
+);
+CREATE INDEX "IX_PlayerKnowledge_owner" ON "script"."PlayerKnowledge"
+  ("playerId", "grantedAt", "scriptId");
+`,
+  },
 ];
