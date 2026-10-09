@@ -18,6 +18,8 @@ import {
 import { PostgresQueryCommands } from "./platform/database/query-commands.ts";
 import { PostgresQueryRepository } from "./platform/database/query-repository.ts";
 import { PostgresQueryViews } from "./platform/database/query-views.ts";
+import { PostgresScriptCommands } from "./platform/database/script-commands.ts";
+import { PostgresScriptRepository } from "./platform/database/script-repository.ts";
 import { startMaintenance } from "./platform/maintenance.ts";
 import { PostgresPlayerCommands } from "./platform/database/player-commands.ts";
 import { PostgresPlayerRepository } from "./platform/database/player-repository.ts";
@@ -44,6 +46,13 @@ const playerCommands = new PostgresPlayerCommands(
   commandReceipts,
   new PostgresOutbox(),
   gameplayReleases,
+  cryptoIdGenerator,
+  systemClock,
+);
+const scriptCommands = new PostgresScriptCommands(
+  new PostgresScriptRepository(unitOfWork),
+  commandReceipts,
+  new PostgresOutbox(),
   cryptoIdGenerator,
   systemClock,
 );
@@ -119,6 +128,7 @@ const app = createApp(environment, {
       unitOfWork.transaction((transaction) =>
         playerRepository.getByAccountId(transaction, accountId),
       ),
+    listOwnedKnowledge: (actor) => scriptCommands.listOwnedKnowledge(actor),
     secureCookies,
   },
   gameplay: {

@@ -8,7 +8,7 @@
 
 状态：Backlog → Ready → InProgress → Review → Done；歧义/权限/环境/依赖问题转Blocked。实现Agent不能把未评审或未验证任务标Done。
 
-当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案创建已落，账本/结算未完成）；T14 InProgress（纯状态机、repository、create/leave/vote及Outbox已落，生产Query已接活跃release校验，Join Saga未完成）。旧文差异无法核实不再阻塞新设计。
+当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案和积分账本已落，Saga结算未完成）；T11 InProgress（Script/Knowledge持久化和持有人HTTP读取已落，尚未由Saga驱动）；T14 InProgress（Query创建/加入/退出/探索/投票/快照路由及phase维护已落，加入竞争故障恢复仍待专项验证）。旧文差异无法核实不再阻塞新设计。
 
 实现任务含代码、适用单元/集成测试、错误处理、可观测性和文档；不允许TODO、固定成功值或mock代替验收。T00为设计任务，只需独立文档评审，不要求不存在的代码/数据库测试；兼容性实测归T01、故障实测归T03–T08及后续任务。验证责任不能以“未实测”永久阻塞设计定稿。
 
@@ -136,7 +136,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 依赖：T09/T05/T08；目录：script核心。
 - 交付：Script、每玩家知识、授予凭证、授权查询、秘密/公开DTO、获得事件。
 - 验收：无权限不可查，多来源保留，重复授予幂等，公开响应/日志/WS无真伪/隐藏来源。
-- 当前交付：0012迁移建立Script实例与玩家Knowledge凭证；Query卡片仅在Query完成且玩家确实探索过时，按持久正文/release创建或复用Script。创建与授予分别使用effect receipt、同事务Outbox事件；Knowledge按来源去重且保留多来源，查询从已认证PlayerActor限定持有人并只映射公开DTO。真实PostgreSQL覆盖裁决前拒绝、重放/复用、正文冲突、多来源和非持有人隔离。尚未接入公开HTTP读取路由，也未由T15持久Saga调用。
+- 当前交付：0012迁移建立Script实例与玩家Knowledge凭证；Query卡片仅在Query完成且玩家确实探索过时，按持久正文/release创建或复用Script。创建与授予分别使用effect receipt、同事务Outbox事件；Knowledge按来源去重且保留多来源，查询从已认证PlayerActor限定持有人并只映射公开DTO。已接入`GET /players/me/knowledge`，通过登录账号解析Player档案，不接受客户端playerId。真实PostgreSQL覆盖裁决前拒绝、重放/复用、正文冲突、多来源和非持有人隔离；路由测试覆盖未认证拒绝和公开字段。尚未由T15持久Saga调用。
 
 ### T12 可恢复传播（1–2日）
 - 依赖：T11/T06；成员接口按T02，最终联调等待T16。
@@ -154,7 +154,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 依赖：T10/T06/T08；目录：query状态机。
 - 交付：房间/成员/行动/投票、deadline、固定release/随机种子、不可变裁决和计划。
 - 子任务：T14a房间/创建/退出/独立ParticipationSlot协调/超时；T14b探索卡/匿名投票/变体与确定性裁决。Join必须持久化执行预留房间座位→独立占槽→确认成员，不跨聚合事务；只有四位确认才开始，恢复/超时可释放预留。执行M0 G01–G06、G09；源信息卡留Query，不能行动事务改Knowledge。
-- 当前交付包括纯Query状态机、PostgreSQL repository、create/leave/vote幂等命令及其同事务Outbox事件、依赖注入HTTP端点；生产组合根现已通过session和Player档案构造Actor，并接入active release校验。bootstrap release禁用Query；新release checksum和公开读取端点均有单测。真实Supabase已验证的仍仅是先前Query创建/receipt/Outbox同事务提交与重放；Identity/Player/release新迁移未应用，退出/投票命令仍以fake UoW测试为主。尚未完成Join Saga协调、inspect/phase推进端点、可玩内容种子及结算，因此不表示T14子任务完成。
+- 当前交付包括纯Query状态机、PostgreSQL repository、create/join/leave/inspect/vote幂等命令、snapshot读取、对应HTTP端点及到期phase维护；生产组合根通过session和Player档案构造Actor，并接入active release校验。Join已持久化座位预留→ParticipationSlot占用→成员确认步骤；真实PostgreSQL覆盖四人加入、私有探索和结算，但并发抢房/逐步骤崩溃恢复仍缺专项验证。尚未完成自动结算Saga和完整首发内容/四玩家E2E，因此不表示T14子任务完成。
 - 验收：四人探索/投票；同一玩家并发加入两房间及每个Join步骤崩溃/重试不双占、可安全释放预留；重复/平票/缺席/退出/逾期符合T00；重启不重抽。
 
 ### T15 结算Saga（1–2日）

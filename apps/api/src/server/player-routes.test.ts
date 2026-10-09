@@ -20,9 +20,15 @@ const profile = {
   score: 1000,
   aggregateVersion: 1,
 };
+const knowledgeItem = {
+  scriptId: "33333333-3333-4333-8333-333333333333",
+  content: "An authorized clue",
+  receivedAt: "2026-10-09T12:00:00.000Z",
+};
 
 function createFixture() {
   let createCalls = 0;
+  let knowledgeCalls = 0;
   const identity: AuthRouteDependencies["identity"] &
     PlayerRouteDependencies["identity"] = {
     getOrCreateSession: async () => ({
@@ -61,6 +67,15 @@ function createFixture() {
     secureCookies: false,
     getByAccountId: async (receivedAccountId) =>
       receivedAccountId === accountId ? profile : null,
+    listOwnedKnowledge: async (actor) => {
+      assert.deepEqual(actor, {
+        kind: "player",
+        accountId,
+        playerId: profile.playerId,
+      });
+      knowledgeCalls += 1;
+      return [knowledgeItem];
+    },
     commands: {
       create: async (receivedAccountId, input, key, traceId) => {
         assert.equal(receivedAccountId, accountId);
@@ -86,7 +101,11 @@ function createFixture() {
     auth,
     players,
   });
-  return { app, get createCalls() { return createCalls; } };
+  return {
+    app,
+    get createCalls() { return createCalls; },
+    get knowledgeCalls() { return knowledgeCalls; },
+  };
 }
 
 test("player creation is behind session, same-origin, CSRF, and idempotency checks", async () => {
@@ -169,6 +188,29 @@ test("player profile lookup requires an authenticated session and omits account 
       url: "/players/me",
     });
     assert.equal(unauthenticated.statusCode, 401);
+  } finally {
+    await fixture.app.close();
+  }
+});
+
+test("owned Knowledge route requires a session and returns only public item fields", async () => {
+  const fixture = createFixture();
+  try {
+    const response = await fixture.app.inject({
+      method: "GET",
+      url: "/players/me/knowledge",
+      headers: { cookie: `mud_session=${sessionSecret}` },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), { items: [knowledgeItem] });
+    assert.equal(fixture.knowledgeCalls, 1);
+
+    const unauthenticated = await fixture.app.inject({
+      method: "GET",
+      url: "/players/me/knowledge",
+    });
+    assert.equal(unauthenticated.statusCode, 401);
+    assert.equal(fixture.knowledgeCalls, 1);
   } finally {
     await fixture.app.close();
   }
