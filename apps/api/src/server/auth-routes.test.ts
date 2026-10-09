@@ -25,11 +25,14 @@ function issuedSession(authenticated: boolean, secret: string): IssuedSession {
   };
 }
 
-function createFixture(options: {
-  readonly invalidCredentials?: boolean;
-  readonly limiterFailure?: boolean;
-  readonly secureCookies?: boolean;
-} = {}) {
+function createFixture(
+  options: {
+    readonly invalidCredentials?: boolean;
+    readonly limiterFailure?: boolean;
+    readonly secureCookies?: boolean;
+    readonly allowHostOriginFallback?: boolean;
+  } = {},
+) {
   const calls: string[] = [];
   const limits: Array<{ scope: string; subject: string; limit: number }> = [];
   const anonymous = issuedSession(false, anonymousSecret);
@@ -62,6 +65,9 @@ function createFixture(options: {
     },
     publicOrigin: origin,
     secureCookies: options.secureCookies ?? false,
+    ...(options.allowHostOriginFallback === undefined
+      ? {}
+      : { allowHostOriginFallback: options.allowHostOriginFallback }),
   };
   const app = createApp(loadEnvironment({ NODE_ENV: "test" }), {
     auth: dependencies,
@@ -87,14 +93,21 @@ test("session endpoint issues HttpOnly cookie but never returns its secret", asy
 
 test("registration requires exact Origin and CSRF before creating an account", async () => {
   const { app, calls, limits } = createFixture();
-  const payload = { username: "Player_01", password: "a sufficiently long password" };
+  const payload = {
+    username: "Player_01",
+    password: "a sufficiently long password",
+  };
   const cookie = `mud_session=${anonymousSecret}`;
   try {
     const crossOrigin = await app.inject({
       method: "POST",
       url: "/auth/register",
       payload,
-      headers: { origin: "https://attacker.example", cookie, "x-csrf-token": anonymousCsrf },
+      headers: {
+        origin: "https://attacker.example",
+        cookie,
+        "x-csrf-token": anonymousCsrf,
+      },
     });
     assert.equal(crossOrigin.statusCode, 403);
     assert.equal(calls.length, 0);
@@ -117,8 +130,34 @@ test("registration requires exact Origin and CSRF before creating an account", a
     assert.equal(created.statusCode, 201);
     assert.equal(created.json().accountId, accountId);
     assert.equal(calls.join(","), "register");
-    assert.deepEqual(limits, [{ scope: "register-ip", subject: "127.0.0.1", limit: 5 }]);
+    assert.deepEqual(limits, [
+      { scope: "register-ip", subject: "127.0.0.1", limit: 5 },
+    ]);
     assert.match(created.headers["set-cookie"] as string, /^mud_session=D+/);
+  } finally {
+    await app.close();
+  }
+});
+
+test("development auth accepts the Origin matching the forwarded request host", async () => {
+  const { app, calls } = createFixture({ allowHostOriginFallback: true });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      payload: {
+        username: "player_01",
+        password: "a sufficiently long password",
+      },
+      headers: {
+        host: "codespace-3000.app.github.dev",
+        origin: "https://codespace-3000.app.github.dev",
+        cookie: `mud_session=${anonymousSecret}`,
+        "x-csrf-token": anonymousCsrf,
+      },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(calls.join(","), "login");
   } finally {
     await app.close();
   }
@@ -130,7 +169,10 @@ test("login uses generic credential errors and rate limits normalized usernames"
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
-      payload: { username: "PLAYER_01", password: "a sufficiently long password" },
+      payload: {
+        username: "PLAYER_01",
+        password: "a sufficiently long password",
+      },
       headers: {
         origin,
         cookie: `mud_session=${anonymousSecret}`,
@@ -158,7 +200,10 @@ test("auth requests fail closed when Redis rate limiting is unavailable", async 
     const response = await app.inject({
       method: "POST",
       url: "/auth/login",
-      payload: { username: "player_01", password: "a sufficiently long password" },
+      payload: {
+        username: "player_01",
+        password: "a sufficiently long password",
+      },
       headers: {
         origin,
         cookie: `mud_session=${anonymousSecret}`,

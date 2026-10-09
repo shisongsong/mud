@@ -117,6 +117,7 @@ const app = createApp(environment, {
     }),
     publicOrigin: resolvePublicOrigin(environment),
     secureCookies,
+    allowHostOriginFallback: environment.NODE_ENV === "development",
   },
   players: {
     identity,

@@ -26,7 +26,9 @@ const knowledgeItem = {
   receivedAt: "2026-10-09T12:00:00.000Z",
 };
 
-function createFixture() {
+function createFixture(
+  options: { readonly allowHostOriginFallback?: boolean } = {},
+) {
   let createCalls = 0;
   let knowledgeCalls = 0;
   const identity: AuthRouteDependencies["identity"] &
@@ -53,7 +55,11 @@ function createFixture() {
       secret === sessionSecret && token === csrfToken,
     authenticate: async (secret) =>
       secret === sessionSecret
-        ? { accountId, csrfToken, expiresAt: new Date("2026-10-09T12:00:00.000Z") }
+        ? {
+            accountId,
+            csrfToken,
+            expiresAt: new Date("2026-10-09T12:00:00.000Z"),
+          }
         : null,
   };
   const auth: AuthRouteDependencies = {
@@ -61,6 +67,9 @@ function createFixture() {
     rateLimiter: { consume: async () => true },
     publicOrigin: origin,
     secureCookies: false,
+    ...(options.allowHostOriginFallback === undefined
+      ? {}
+      : { allowHostOriginFallback: options.allowHostOriginFallback }),
   };
   const players: PlayerRouteDependencies = {
     identity,
@@ -103,13 +112,17 @@ function createFixture() {
   });
   return {
     app,
-    get createCalls() { return createCalls; },
-    get knowledgeCalls() { return knowledgeCalls; },
+    get createCalls() {
+      return createCalls;
+    },
+    get knowledgeCalls() {
+      return knowledgeCalls;
+    },
   };
 }
 
 test("player creation is behind session, same-origin, CSRF, and idempotency checks", async () => {
-  const fixture = createFixture();
+  const fixture = createFixture({ allowHostOriginFallback: true });
   try {
     const payload = {
       displayName: "Ada",
@@ -137,7 +150,8 @@ test("player creation is behind session, same-origin, CSRF, and idempotency chec
       url: "/players",
       payload,
       headers: {
-        origin,
+        host: "codespace-3000.app.github.dev",
+        origin: "https://codespace-3000.app.github.dev",
         cookie: `mud_session=${sessionSecret}`,
         "idempotency-key": "create-player-key-0001",
       },

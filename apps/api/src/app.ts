@@ -19,6 +19,7 @@ import {
   type QueryRouteDependencies,
 } from "./server/query-routes.ts";
 import { registerPlayRoutes } from "./server/play-routes.ts";
+import { isSameOriginRequest } from "./server/origin.ts";
 
 export interface AppDependencies {
   readonly auth?: AuthRouteDependencies;
@@ -58,11 +59,12 @@ export function createApp(
       ) {
         return;
       }
-      const origin = request.headers.origin;
       if (
-        typeof origin !== "string" ||
-        origin === "null" ||
-        safeOrigin(origin) !== auth.publicOrigin
+        !isSameOriginRequest(
+          request,
+          auth.publicOrigin,
+          auth.allowHostOriginFallback ?? false,
+        )
       ) {
         const traceId = randomUUID();
         return reply.code(403).send({
@@ -112,12 +114,4 @@ export function createApp(
   }
 
   return app;
-}
-
-function safeOrigin(value: string): string | null {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
 }

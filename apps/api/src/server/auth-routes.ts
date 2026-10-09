@@ -16,6 +16,7 @@ import type {
 } from "../platform/identity.ts";
 import { normalizeUsername } from "../platform/identity.ts";
 import type { AuthRateLimiter } from "../platform/auth-rate-limiter.ts";
+import { isSameOriginRequest } from "./origin.ts";
 
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
 const REGISTER_WINDOW_MS = 60 * 60 * 1000;
@@ -23,15 +24,12 @@ const REGISTER_WINDOW_MS = 60 * 60 * 1000;
 export interface AuthRouteDependencies {
   readonly identity: Pick<
     PostgresIdentityService,
-    | "getOrCreateSession"
-    | "register"
-    | "login"
-    | "logout"
-    | "validateCsrf"
+    "getOrCreateSession" | "register" | "login" | "logout" | "validateCsrf"
   >;
   readonly rateLimiter: AuthRateLimiter;
   readonly publicOrigin: string;
   readonly secureCookies: boolean;
+  readonly allowHostOriginFallback?: boolean;
 }
 
 export function registerAuthRoutes(
@@ -47,7 +45,8 @@ export function registerAuthRoutes(
       const issued = await dependencies.identity.getOrCreateSession(
         readSessionSecret(request, dependencies.secureCookies),
       );
-      if (issued.cookieChanged) setSessionCookie(reply, cookieName, issued, dependencies.secureCookies);
+      if (issued.cookieChanged)
+        setSessionCookie(reply, cookieName, issued, dependencies.secureCookies);
       return reply.send(sessionViewSchema.parse(issued.view));
     } catch {
       return sendServiceUnavailable(reply, randomUUID());
@@ -56,19 +55,47 @@ export function registerAuthRoutes(
 
   app.post("/auth/register", async (request, reply) => {
     const traceId = randomUUID();
-    if (!hasAllowedOrigin(request, dependencies.publicOrigin)) {
-      return sendError(reply, 403, "ORIGIN_REJECTED", "auth.originRejected", traceId);
+    if (
+      !isSameOriginRequest(
+        request,
+        dependencies.publicOrigin,
+        dependencies.allowHostOriginFallback ?? false,
+      )
+    ) {
+      return sendError(
+        reply,
+        403,
+        "ORIGIN_REJECTED",
+        "auth.originRejected",
+        traceId,
+      );
     }
     const body = registerAccountRequestSchema.safeParse(request.body);
     if (!body.success) {
-      return sendError(reply, 400, "INVALID_REQUEST", "api.invalid_request", traceId);
+      return sendError(
+        reply,
+        400,
+        "INVALID_REQUEST",
+        "api.invalid_request",
+        traceId,
+      );
     }
     const secret = readSessionSecret(request, dependencies.secureCookies);
     const csrfToken = readHeader(request.headers["x-csrf-token"]);
-    const csrfValid = await validateCsrf(dependencies.identity, secret, csrfToken);
+    const csrfValid = await validateCsrf(
+      dependencies.identity,
+      secret,
+      csrfToken,
+    );
     if (csrfValid === null) return sendServiceUnavailable(reply, traceId);
     if (!csrfValid) {
-      return sendError(reply, 403, "CSRF_REJECTED", "auth.csrfRejected", traceId);
+      return sendError(
+        reply,
+        403,
+        "CSRF_REJECTED",
+        "auth.csrfRejected",
+        traceId,
+      );
     }
     const withinLimit = await consumeLimit(
       dependencies.rateLimiter,
@@ -93,10 +120,22 @@ export function registerAuthRoutes(
       return reply.code(201).send(sessionViewSchema.parse(issued.view));
     } catch (error: unknown) {
       if (error instanceof AuthSessionError) {
-        return sendError(reply, 403, "CSRF_REJECTED", "auth.csrfRejected", traceId);
+        return sendError(
+          reply,
+          403,
+          "CSRF_REJECTED",
+          "auth.csrfRejected",
+          traceId,
+        );
       }
       if (error instanceof UsernameUnavailableError) {
-        return sendError(reply, 409, "USERNAME_UNAVAILABLE", "auth.usernameUnavailable", traceId);
+        return sendError(
+          reply,
+          409,
+          "USERNAME_UNAVAILABLE",
+          "auth.usernameUnavailable",
+          traceId,
+        );
       }
       return sendServiceUnavailable(reply, traceId);
     }
@@ -104,19 +143,47 @@ export function registerAuthRoutes(
 
   app.post("/auth/login", async (request, reply) => {
     const traceId = randomUUID();
-    if (!hasAllowedOrigin(request, dependencies.publicOrigin)) {
-      return sendError(reply, 403, "ORIGIN_REJECTED", "auth.originRejected", traceId);
+    if (
+      !isSameOriginRequest(
+        request,
+        dependencies.publicOrigin,
+        dependencies.allowHostOriginFallback ?? false,
+      )
+    ) {
+      return sendError(
+        reply,
+        403,
+        "ORIGIN_REJECTED",
+        "auth.originRejected",
+        traceId,
+      );
     }
     const body = loginRequestSchema.safeParse(request.body);
     if (!body.success) {
-      return sendError(reply, 400, "INVALID_REQUEST", "api.invalid_request", traceId);
+      return sendError(
+        reply,
+        400,
+        "INVALID_REQUEST",
+        "api.invalid_request",
+        traceId,
+      );
     }
     const secret = readSessionSecret(request, dependencies.secureCookies);
     const csrfToken = readHeader(request.headers["x-csrf-token"]);
-    const csrfValid = await validateCsrf(dependencies.identity, secret, csrfToken);
+    const csrfValid = await validateCsrf(
+      dependencies.identity,
+      secret,
+      csrfToken,
+    );
     if (csrfValid === null) return sendServiceUnavailable(reply, traceId);
     if (!csrfValid) {
-      return sendError(reply, 403, "CSRF_REJECTED", "auth.csrfRejected", traceId);
+      return sendError(
+        reply,
+        403,
+        "CSRF_REJECTED",
+        "auth.csrfRejected",
+        traceId,
+      );
     }
     const username = normalizeUsername(body.data.username);
     const withinIpLimit = await consumeLimit(
@@ -160,7 +227,13 @@ export function registerAuthRoutes(
         );
       }
       if (error instanceof AuthSessionError) {
-        return sendError(reply, 403, "CSRF_REJECTED", "auth.csrfRejected", traceId);
+        return sendError(
+          reply,
+          403,
+          "CSRF_REJECTED",
+          "auth.csrfRejected",
+          traceId,
+        );
       }
       return sendServiceUnavailable(reply, traceId);
     }
@@ -168,15 +241,37 @@ export function registerAuthRoutes(
 
   app.post("/auth/logout", async (request, reply) => {
     const traceId = randomUUID();
-    if (!hasAllowedOrigin(request, dependencies.publicOrigin)) {
-      return sendError(reply, 403, "ORIGIN_REJECTED", "auth.originRejected", traceId);
+    if (
+      !isSameOriginRequest(
+        request,
+        dependencies.publicOrigin,
+        dependencies.allowHostOriginFallback ?? false,
+      )
+    ) {
+      return sendError(
+        reply,
+        403,
+        "ORIGIN_REJECTED",
+        "auth.originRejected",
+        traceId,
+      );
     }
     const secret = readSessionSecret(request, dependencies.secureCookies);
     const csrfToken = readHeader(request.headers["x-csrf-token"]);
-    const csrfValid = await validateCsrf(dependencies.identity, secret, csrfToken);
+    const csrfValid = await validateCsrf(
+      dependencies.identity,
+      secret,
+      csrfToken,
+    );
     if (csrfValid === null) return sendServiceUnavailable(reply, traceId);
     if (!csrfValid) {
-      return sendError(reply, 403, "CSRF_REJECTED", "auth.csrfRejected", traceId);
+      return sendError(
+        reply,
+        403,
+        "CSRF_REJECTED",
+        "auth.csrfRejected",
+        traceId,
+      );
     }
     try {
       await dependencies.identity.logout(secret!, csrfToken!);
@@ -214,16 +309,6 @@ async function validateCsrf(
     return await identity.validateCsrf(secret, csrfToken);
   } catch {
     return null;
-  }
-}
-
-function hasAllowedOrigin(request: FastifyRequest, expectedOrigin: string): boolean {
-  const origin = readHeader(request.headers.origin);
-  if (!origin || origin === "null") return false;
-  try {
-    return new URL(origin).origin === expectedOrigin;
-  } catch {
-    return false;
   }
 }
 
