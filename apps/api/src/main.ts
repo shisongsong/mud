@@ -1,5 +1,9 @@
 import { createApp } from "./app.ts";
-import { loadEnvironment, resolvePublicOrigin } from "./config/env.ts";
+import {
+  loadEnvironment,
+  resolvePublicOrigin,
+  resolveRedisUrl,
+} from "./config/env.ts";
 import {
   cryptoIdGenerator,
   cryptoRandomSource,
@@ -88,15 +92,41 @@ const stopQueryMaintenance = startMaintenance({
   },
 });
 const secureCookies = environment.NODE_ENV === "production";
-const redis = createClient({ url: environment.REDIS_URL });
-redis.on("error", () => undefined);
+const redisUrl = resolveRedisUrl(environment);
+const redisUrlParts = new URL(redisUrl);
+const createRedisClient = () => {
+  const client = createClient({
+    url: redisUrl,
+    ...(environment.REDIS_PASSWORD
+      ? { password: environment.REDIS_PASSWORD }
+      : {}),
+    socket: {
+      ...(redisUrlParts.protocol === "rediss:" || redisUrlParts.port === "6380"
+        ? { tls: true }
+        : {}),
+      connectTimeout: 3000,
+      reconnectStrategy: false,
+    },
+  });
+  client.on("error", () => undefined);
+  return client;
+};
+let redis = createRedisClient();
 let redisConnection: Promise<void> | null = null;
 const connectRedis = async () => {
   if (redis.isReady) return;
   if (!redisConnection) {
-    redisConnection = redis
+    const client = redis;
+    redisConnection = client
       .connect()
       .then(() => undefined)
+      .catch((error: unknown) => {
+        if (redis === client) {
+          if (client.isOpen) client.destroy();
+          redis = createRedisClient();
+        }
+        throw error;
+      })
       .finally(() => {
         redisConnection = null;
       });

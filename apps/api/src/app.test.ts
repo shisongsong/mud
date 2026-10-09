@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { createApp } from "./app.ts";
-import { loadEnvironment, resolvePublicOrigin } from "./config/env.ts";
+import {
+  loadEnvironment,
+  resolvePublicOrigin,
+  resolveRedisUrl,
+} from "./config/env.ts";
 import type { PlayerActor } from "./kernel/actor.ts";
 
 let app: FastifyInstance;
@@ -63,6 +67,35 @@ test("explicit and non-Codespaces public origins remain unchanged", () => {
 
   const local = loadEnvironment({ NODE_ENV: "development", PORT: "3000" });
   assert.equal(resolvePublicOrigin(local, {}), "http://127.0.0.1:3000");
+});
+
+test("development defaults to the configured Azure Redis TLS endpoint", () => {
+  const development = loadEnvironment({ NODE_ENV: "development" });
+  assert.equal(
+    resolveRedisUrl(development),
+    "rediss://nse-dev-redis.redis.cache.windows.net:6380",
+  );
+
+  const explicit = loadEnvironment({
+    NODE_ENV: "development",
+    REDIS_URL: "rediss://other-redis.example.com:6380",
+  });
+  assert.equal(
+    resolveRedisUrl(explicit),
+    "rediss://other-redis.example.com:6380",
+  );
+
+  const localOverride = loadEnvironment({
+    NODE_ENV: "development",
+    REDIS_URL: "redis://127.0.0.1:6379",
+  });
+  assert.equal(
+    resolveRedisUrl(localOverride),
+    "rediss://nse-dev-redis.redis.cache.windows.net:6380",
+  );
+
+  const testEnvironment = loadEnvironment({ NODE_ENV: "test" });
+  assert.equal(resolveRedisUrl(testEnvironment), "redis://127.0.0.1:6379");
 });
 
 test("readiness endpoint checks its dependency and never exposes failure details", async () => {
