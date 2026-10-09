@@ -22,6 +22,7 @@ import type {
   PrivateEvidenceCard,
   QueryAggregate,
   QueryScenario,
+  SettlementConfirmation,
 } from "../../modules/query/public.ts";
 import {
   advanceQuery,
@@ -294,7 +295,7 @@ export class PostgresQueryCommands {
 
   finalizeSettlement(
     queryId: string,
-    confirmedEffectKeys: readonly string[],
+    confirmations: readonly SettlementConfirmation[],
     traceId?: string,
   ): Promise<{
     readonly replayed: boolean;
@@ -315,10 +316,32 @@ export class PostgresQueryCommands {
         throw error;
       }
       if (query.phase === "completed") {
+        const persisted =
+          await this.repository.getSettlementConfirmationsInTransaction(
+            transaction,
+            queryId,
+          );
+        const persistedByKey = new Map(
+          persisted.map(({ effectKey, resultReference }) => [
+            effectKey,
+            resultReference,
+          ]),
+        );
+        if (
+          persistedByKey.size !== confirmations.length ||
+          new Set(confirmations.map(({ effectKey }) => effectKey)).size !==
+            confirmations.length ||
+          confirmations.some(
+            ({ effectKey, resultReference }) =>
+              persistedByKey.get(effectKey) !== resultReference,
+          )
+        ) {
+          throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+        }
         return { replayed: true, aggregateVersion: query.version };
       }
 
-      const updated = finalizeSettlement(query, confirmedEffectKeys);
+      const updated = finalizeSettlement(query, confirmations);
       const plan = updated.settlementPlan;
       if (plan === null) {
         throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
@@ -333,6 +356,12 @@ export class PostgresQueryCommands {
         error.name = "QueryConcurrencyError";
         throw error;
       }
+      await this.repository.recordSettlementConfirmationsInTransaction(
+        transaction,
+        queryId,
+        confirmations,
+        nowMs,
+      );
       await transaction.query(
         'DELETE FROM "query"."ParticipationSlots" WHERE "queryId" = @queryId;',
         { queryId },

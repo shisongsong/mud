@@ -120,6 +120,8 @@ test("settlement completes only after every planned effect is confirmed", () => 
         isTruth: true,
     }));
     query = advanceQuery(query, 130_000);
+    query = castVote(query, "player_1", "choice_2", query.version, 130_001);
+    query = castVote(query, "player_2", "abstain", query.version, 130_002);
     assert.throws(() => finalizeSettlement(query, []), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING");
     query = advanceQuery(query, 190_000);
     const plan = query.settlementPlan;
@@ -132,12 +134,27 @@ test("settlement completes only after every planned effect is confirmed", () => 
         "points:query_1:player_3",
         "points:query_1:player_4",
     ]);
+    assert.deepEqual(plan?.pointAwards, [
+        { playerId: "player_1", requestedDelta: 25 },
+        { playerId: "player_2", requestedDelta: 5 },
+        { playerId: "player_3", requestedDelta: 0 },
+        { playerId: "player_4", requestedDelta: 0 },
+    ]);
     const targets = plan?.targets ?? [];
-    assert.throws(() => finalizeSettlement(query, targets.slice(1)), (error) => error instanceof QueryRuleError && error.code === "SETTLEMENT_INCOMPLETE");
-    assert.throws(() => finalizeSettlement(query, [...targets, "knowledge:query_1:forged"]), (error) => error instanceof QueryRuleError &&
+    const confirmations = (effectKeys) => effectKeys.map((effectKey) => ({
+        effectKey,
+        resultReference: `result:${effectKey}`,
+    }));
+    assert.throws(() => finalizeSettlement(query, confirmations(targets.slice(1))), (error) => error instanceof QueryRuleError && error.code === "SETTLEMENT_INCOMPLETE");
+    assert.throws(() => finalizeSettlement(query, confirmations([...targets, "knowledge:query_1:forged"])), (error) => error instanceof QueryRuleError &&
         error.code === "SETTLEMENT_PLAN_MISMATCH");
-    const completed = finalizeSettlement(query, [...targets].reverse());
+    const completed = finalizeSettlement(query, confirmations([...targets].reverse()));
     assert.equal(completed.phase, "completed");
     assert.equal(completed.version, query.version + 1);
-    assert.throws(() => finalizeSettlement(completed, targets), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING");
+    assert.throws(() => finalizeSettlement(completed, confirmations(targets)), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_SETTLING");
+    assert.throws(() => finalizeSettlement(query, [
+        ...confirmations(targets.slice(1)),
+        { effectKey: targets[0], resultReference: " " },
+    ]), (error) => error instanceof QueryRuleError &&
+        error.code === "SETTLEMENT_PLAN_MISMATCH");
 });

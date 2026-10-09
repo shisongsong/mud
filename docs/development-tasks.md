@@ -130,7 +130,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 交付：单账号角色、组合验证、version、积分账本、结算公开端口/事件。
 - 按定稿：72组合纯展示，初始1000，rank阈值/积分上限/夹取账本；角色事件驱动Social成员加入。
 - 验收：并发创建一次，非法组合拒绝，重复结算无重复积分，段位边界正确。
-- 首批实现：每账号唯一Player档案、严格角色组合、`POST /players`与`GET /players/me`；创建与receipt/`PlayerCreated` Outbox同事务，按账号幂等重放。尚无真实库验证、积分账本/段位更新及结算。
+- 当前交付：每账号唯一Player档案、严格角色组合、`POST /players`与`GET /players/me`；创建与receipt/`PlayerCreated` Outbox同事务，按账号幂等重放。积分效果已有全局effectId幂等账本、同事务余额更新/`ScoreChanged`、改参冲突、0..1,000,000,000夹取及零分结果记录；0010迁移和真实PostgreSQL集成验证通过。积分账本底座已落，但通用奖励规则、段位公开读取和T15 Saga执行尚未完成。
 
 ### T11 信息与知识（1–2日）
 - 依赖：T09/T05/T08；目录：script核心。
@@ -161,6 +161,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 交付：逐玩家积分/信息、Board delta、固定计划effect确认引用、pending/failed/retry；Saga将完整effectKey/结果引用提交Query，Query不得访问其他模块表；全目标确认后FinalizeSettlement由Query校验并事务性完成/Outbox发布仅供Rules的QuerySettlementCompleted。内部payload的selectedCorrect不得进入客户端、普通WS、公开投影或一般日志。
 - 补齐：每张已探索卡先幂等创建/复用Script，再单独授予Knowledge，步骤键包含cardId；0奖励目标仍有确认结果，不凭是否有账本猜完成。
 - 验收：每步骤后崩溃均可恢复；并发无重复奖励；永久失败可定位，不提前completed；不读写其他模块内部表。
+- 当前交付：Query 在裁决时持久化固定目标和逐玩家积分delta（有效探索/投票+5，正确候选+20，未参与0）；FinalizeSettlement 校验每个目标的effectKey与非空resultReference，在同一事务记录确认、完成房间、释放参与槽并写仅供内部消费的QuerySettlementCompleted。完成态重放须与已存引用完全一致。Player积分effect已有原子账本和ScoreChanged；0010/0011迁移及真实PostgreSQL集成已覆盖join/inspect/vote/固定奖分计划/finalize/Player记账。T15仍InProgress：Player score effect尚未由持久Saga调用；Script/Knowledge、Board效果及持久Saga执行、pending/failed/retry协调尚未实现，当前Finalize入口仍是Query内部命令。
 
 ### T16 大厅与受众（1日）
 - 依赖：T09/T10/T05；目录：social。

@@ -408,4 +408,55 @@ CREATE TABLE "query"."SettlementTargets" (
 );
 `,
   },
+  {
+    id: "0009_query_settlement_confirmations",
+    sql: `
+CREATE TABLE "query"."SettlementConfirmations" (
+  "queryId" uuid NOT NULL,
+  "effectKey" varchar(256) NOT NULL,
+  "resultReference" varchar(512) NOT NULL CHECK (length(btrim("resultReference")) > 0),
+  "confirmedAt" timestamptz(3) NOT NULL,
+  PRIMARY KEY ("queryId", "effectKey"),
+  FOREIGN KEY ("queryId", "effectKey")
+    REFERENCES "query"."SettlementTargets"("queryId", "effectKey")
+);
+`,
+  },
+  {
+    id: "0010_player_score_ledger",
+    sql: `
+ALTER TABLE "player"."Players" DROP CONSTRAINT "Players_score_check";
+ALTER TABLE "player"."Players"
+  ADD CONSTRAINT "CK_Players_score_range" CHECK ("score" BETWEEN 0 AND 1000000000);
+CREATE TABLE "player"."ScoreEntries" (
+  "effectId" varchar(256) PRIMARY KEY,
+  "playerId" uuid NOT NULL REFERENCES "player"."Players"("playerId") ON DELETE CASCADE,
+  "requestedDelta" integer NOT NULL CHECK ("requestedDelta" BETWEEN 0 AND 1000000000),
+  "effectiveDelta" integer NOT NULL CHECK ("effectiveDelta" BETWEEN 0 AND 1000000000),
+  "scoreBefore" integer NOT NULL CHECK ("scoreBefore" BETWEEN 0 AND 1000000000),
+  "scoreAfter" integer NOT NULL CHECK ("scoreAfter" BETWEEN 0 AND 1000000000),
+  "aggregateVersion" bigint NOT NULL CHECK ("aggregateVersion" > 0),
+  "clamped" boolean NOT NULL,
+  "reasonRef" varchar(256) NOT NULL CHECK (length(btrim("reasonRef")) > 0),
+  "appliedAt" timestamptz(3) NOT NULL,
+  CHECK ("scoreAfter" - "scoreBefore" = "effectiveDelta"),
+  CHECK ("effectiveDelta" <= "requestedDelta"),
+  CHECK ("clamped" = ("effectiveDelta" < "requestedDelta"))
+);
+CREATE INDEX "IX_PlayerScoreEntries_player" ON "player"."ScoreEntries" ("playerId", "appliedAt", "effectId");
+`,
+  },
+  {
+    id: "0011_query_settlement_point_awards",
+    sql: `
+CREATE TABLE "query"."SettlementPointAwards" (
+  "queryId" uuid NOT NULL REFERENCES "query"."SettlementPlans"("queryId"),
+  "playerId" uuid NOT NULL,
+  "requestedDelta" smallint NOT NULL CHECK ("requestedDelta" BETWEEN 0 AND 25),
+  PRIMARY KEY ("queryId", "playerId"),
+  FOREIGN KEY ("queryId", "playerId")
+    REFERENCES "query"."QueryParticipants"("queryId", "playerId")
+);
+`,
+  },
 ];

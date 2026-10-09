@@ -99,7 +99,9 @@ async function cleanupRoom(
       `DELETE FROM "query"."QueryVotes" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."ParticipationSlots" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."JoinReservations" WHERE "queryId" = @queryId;`,
+      `DELETE FROM "query"."SettlementPointAwards" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."QueryParticipants" WHERE "queryId" = @queryId;`,
+      `DELETE FROM "query"."SettlementConfirmations" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."SettlementTargets" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."SettlementPlans" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."QueryRooms" WHERE "queryId" = @queryId;`,
@@ -295,15 +297,48 @@ test(
       assert.equal(settling?.phase, "settling");
       const targets = settling?.settlementPlan?.targets ?? [];
       assert.equal(targets.length, 6);
+      const expectedAward = (actorIndex: number) =>
+        (actorIndex < 2 ? 5 : 0) +
+        (settling?.scenario?.correctChoice === "choice_1" && actorIndex < 2
+          ? 20
+          : 0);
+      assert.deepEqual(
+        settling?.settlementPlan?.pointAwards.map(
+          ({ playerId, requestedDelta }) => ({
+            playerId,
+            requestedDelta,
+          }),
+        ),
+        actors
+          .map((actor, index) => ({
+            playerId: actor.playerId,
+            requestedDelta: expectedAward(index),
+          }))
+          .sort((left, right) =>
+            left.playerId < right.playerId
+              ? -1
+              : left.playerId > right.playerId
+                ? 1
+                : 0,
+          ),
+      );
+      const confirmations = (effectKeys: readonly string[]) =>
+        effectKeys.map((effectKey) => ({
+          effectKey,
+          resultReference: `integration-result:${effectKey}`,
+        }));
 
       await assert.rejects(
-        commands.finalizeSettlement(roomId, targets.slice(1)),
+        commands.finalizeSettlement(roomId, confirmations(targets.slice(1))),
         (error: unknown) =>
           error instanceof QueryRuleError &&
           error.code === "SETTLEMENT_INCOMPLETE",
       );
       await assert.rejects(
-        commands.finalizeSettlement(roomId, [...targets, "knowledge:forged"]),
+        commands.finalizeSettlement(
+          roomId,
+          confirmations([...targets, "knowledge:forged"]),
+        ),
         (error: unknown) =>
           error instanceof QueryRuleError &&
           error.code === "SETTLEMENT_PLAN_MISMATCH",
@@ -312,15 +347,64 @@ test(
 
       const finalized = await commands.finalizeSettlement(
         roomId,
-        [...targets].reverse(),
+        confirmations([...targets].reverse()),
       );
       assert.equal(finalized.replayed, false);
-      const replayed = await commands.finalizeSettlement(roomId, targets);
+      const replayed = await commands.finalizeSettlement(
+        roomId,
+        confirmations(targets),
+      );
       assert.equal(replayed.replayed, true);
       assert.equal(replayed.aggregateVersion, finalized.aggregateVersion);
+      await assert.rejects(
+        commands.finalizeSettlement(
+          roomId,
+          confirmations(targets).map((confirmation, index) =>
+            index === 0
+              ? { ...confirmation, resultReference: "result:forged" }
+              : confirmation,
+          ),
+        ),
+        (error: unknown) =>
+          error instanceof QueryRuleError &&
+          error.code === "SETTLEMENT_PLAN_MISMATCH",
+      );
+      await assert.rejects(
+        commands.finalizeSettlement(
+          roomId,
+          confirmations([...targets.slice(1), targets[0]!, targets[0]!]),
+        ),
+        (error: unknown) =>
+          error instanceof QueryRuleError &&
+          error.code === "SETTLEMENT_PLAN_MISMATCH",
+      );
 
       const completed = await repository.get(roomId);
       assert.equal(completed?.phase, "completed");
+
+      const persistedConfirmations = await unitOfWork.transaction(
+        (transaction) =>
+          transaction.query<{
+            effectKey: string;
+            resultReference: string;
+          }>(
+            `SELECT "effectKey" AS "effectKey",
+                    "resultReference" AS "resultReference"
+             FROM "query"."SettlementConfirmations"
+             WHERE "queryId" = @queryId ORDER BY "effectKey";`,
+            { queryId: roomId },
+          ),
+      );
+      assert.equal(persistedConfirmations.length, targets.length);
+      assert.deepEqual(
+        persistedConfirmations.map(({ effectKey }) => effectKey),
+        [...targets].sort(),
+      );
+      assert.ok(
+        persistedConfirmations.every(({ resultReference }) =>
+          resultReference.startsWith("integration-result:"),
+        ),
+      );
 
       const events = await unitOfWork.transaction((transaction) =>
         transaction.query<{

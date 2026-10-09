@@ -8,6 +8,7 @@ import type {
   QueryScenario,
   QuerySite,
   QueryVote,
+  SettlementConfirmation,
   SettlementPlan,
 } from "../../modules/query/public.ts";
 import type {
@@ -550,12 +551,25 @@ ORDER BY "effectKey" COLLATE "C";
 `,
       { queryId },
     );
+    const pointAwardRows = await transaction.query<{
+      readonly playerId: string;
+      readonly requestedDelta: number;
+    }>(
+      `
+SELECT "playerId" AS "playerId", "requestedDelta" AS "requestedDelta"
+FROM "query"."SettlementPointAwards"
+WHERE "queryId" = @queryId
+ORDER BY "playerId";
+`,
+      { queryId },
+    );
     const settlementPlan: SettlementPlan | null =
       planRows[0] === undefined
         ? null
         : {
             settlementId: planRows[0].settlementId,
             targets: targetRows.map(({ effectKey }) => effectKey),
+            pointAwards: pointAwardRows,
           };
     return hydrateQuery(room, participants, actions, votes, settlementPlan);
   }
@@ -612,10 +626,23 @@ RETURNING "queryId" AS "queryId";
       'DELETE FROM "query"."QueryVotes" WHERE "queryId" = @queryId;',
       { queryId: query.queryId },
     );
+    const retainedParticipantParameters = Object.fromEntries(
+      query.participants.map(({ playerId }, index) => [
+        `retainedPlayerId${index}`,
+        playerId,
+      ]),
+    );
+    const retainedParticipants = query.participants
+      .map((_, index) => `@retainedPlayerId${index}`)
+      .join(", ");
     await transaction.query(
       `DELETE FROM "query"."QueryParticipants"
-WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed';`,
-      { queryId: query.queryId },
+WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed'${
+        retainedParticipants.length === 0
+          ? ""
+          : ` AND "playerId" NOT IN (${retainedParticipants})`
+      };`,
+      { queryId: query.queryId, ...retainedParticipantParameters },
     );
     await insertChildren(transaction, query);
     if (query.settlementPlan !== null) {
@@ -626,6 +653,45 @@ WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed';`,
       );
     }
     return true;
+  }
+
+  async recordSettlementConfirmationsInTransaction(
+    transaction: QueryExecutor,
+    queryId: string,
+    confirmations: readonly SettlementConfirmation[],
+    confirmedAt: number,
+  ): Promise<void> {
+    for (const { effectKey, resultReference } of confirmations) {
+      await transaction.query(
+        `
+INSERT INTO "query"."SettlementConfirmations"
+  ("queryId", "effectKey", "resultReference", "confirmedAt")
+VALUES (@queryId, @effectKey, @resultReference, @confirmedAt);
+`,
+        {
+          queryId,
+          effectKey,
+          resultReference,
+          confirmedAt: new Date(confirmedAt),
+        },
+      );
+    }
+  }
+
+  async getSettlementConfirmationsInTransaction(
+    transaction: QueryExecutor,
+    queryId: string,
+  ): Promise<readonly SettlementConfirmation[]> {
+    return transaction.query<SettlementConfirmation>(
+      `
+SELECT "effectKey" AS "effectKey",
+       "resultReference" AS "resultReference"
+FROM "query"."SettlementConfirmations"
+WHERE "queryId" = @queryId
+ORDER BY "effectKey";
+`,
+      { queryId },
+    );
   }
 }
 
@@ -659,7 +725,8 @@ async function insertChildren(
     await transaction.query(
       `
 INSERT INTO "query"."QueryParticipants" ("queryId", "playerId", "joinedAt", "participationStatus")
-VALUES (@queryId, @playerId, @joinedAt, 'confirmed');
+VALUES (@queryId, @playerId, @joinedAt, 'confirmed')
+ON CONFLICT ("queryId", "playerId") DO NOTHING;
 `,
       {
         queryId: query.queryId,
@@ -729,6 +796,17 @@ VALUES (@queryId, @effectKey)
 ON CONFLICT ("queryId", "effectKey") DO NOTHING;
 `,
       { queryId, effectKey },
+    );
+  }
+  for (const { playerId, requestedDelta } of plan.pointAwards) {
+    await transaction.query(
+      `
+INSERT INTO "query"."SettlementPointAwards"
+  ("queryId", "playerId", "requestedDelta")
+VALUES (@queryId, @playerId, @requestedDelta)
+ON CONFLICT ("queryId", "playerId") DO NOTHING;
+`,
+      { queryId, playerId, requestedDelta },
     );
   }
 }

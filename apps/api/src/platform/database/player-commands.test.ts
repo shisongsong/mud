@@ -12,7 +12,10 @@ import type {
 } from "../transactions/unit-of-work.ts";
 import { PostgresOutbox } from "../transactions/outbox.ts";
 import type { GameplayReleaseReader } from "./gameplay-release-repository.ts";
-import { PlayerAlreadyExistsError, PostgresPlayerCommands } from "./player-commands.ts";
+import {
+  PlayerAlreadyExistsError,
+  PostgresPlayerCommands,
+} from "./player-commands.ts";
 import { PostgresPlayerRepository } from "./player-repository.ts";
 
 interface Receipt {
@@ -23,12 +26,16 @@ interface Receipt {
 
 class MemoryPlayerDatabase implements UnitOfWork {
   players = new Map<string, SqlParameters>();
+  scoreEntries = new Map<string, SqlParameters>();
   receipts = new Map<string, Receipt>();
   streams = new Map<string, number>();
   events: SqlParameters[] = [];
 
-  async transaction<T>(work: (transaction: QueryExecutor) => Promise<T>): Promise<T> {
+  async transaction<T>(
+    work: (transaction: QueryExecutor) => Promise<T>,
+  ): Promise<T> {
     const players = new Map(this.players);
+    const scoreEntries = new Map(this.scoreEntries);
     const receipts = new Map(this.receipts);
     const streams = new Map(this.streams);
     const events = [...this.events];
@@ -38,6 +45,14 @@ class MemoryPlayerDatabase implements UnitOfWork {
         parameters: SqlParameters = {},
       ): Promise<readonly Row[]> => {
         if (statement.includes("pg_advisory_xact_lock")) return [];
+        if (statement.includes('FROM "player"."ScoreEntries"')) {
+          const entry = scoreEntries.get(String(parameters["effectId"]));
+          return (entry ? [entry] : []) as unknown as readonly Row[];
+        }
+        if (statement.includes('INSERT INTO "player"."ScoreEntries"')) {
+          scoreEntries.set(String(parameters["effectId"]), parameters);
+          return [];
+        }
         if (statement.includes('FROM "platform"."CommandReceipts"')) {
           const receipt = receipts.get(receiptKey(parameters));
           return (receipt ? [receipt] : []) as unknown as readonly Row[];
@@ -51,10 +66,25 @@ class MemoryPlayerDatabase implements UnitOfWork {
           return [];
         }
         if (statement.includes('FROM "player"."Players"')) {
-          const player = [...players.values()].find(
-            (record) => record["accountId"] === parameters["accountId"],
+          const player = [...players.values()].find((record) =>
+            parameters["playerId"] === undefined
+              ? record["accountId"] === parameters["accountId"]
+              : record["playerId"] === parameters["playerId"],
           );
           return (player ? [player] : []) as unknown as readonly Row[];
+        }
+        if (statement.includes('UPDATE "player"."Players"')) {
+          const playerId = String(parameters["playerId"]);
+          const player = players.get(playerId);
+          if (!player) return [];
+          const aggregateVersion = Number(player["aggregateVersion"]) + 1;
+          players.set(playerId, {
+            ...player,
+            score: parameters["scoreAfter"]!,
+            aggregateVersion,
+            updatedAt: parameters["appliedAt"]!,
+          });
+          return [{ aggregateVersion }] as unknown as readonly Row[];
         }
         if (statement.includes('INSERT INTO "player"."Players"')) {
           const duplicate = [...players.values()].some(
@@ -66,7 +96,10 @@ class MemoryPlayerDatabase implements UnitOfWork {
               constraint: "Players_accountId_key",
             });
           }
-          players.set(String(parameters["playerId"]), parameters);
+          players.set(String(parameters["playerId"]), {
+            ...parameters,
+            score: 1000,
+          });
           return [];
         }
         if (statement.includes('INSERT INTO "platform"."OutboxStreams"')) {
@@ -90,6 +123,7 @@ class MemoryPlayerDatabase implements UnitOfWork {
     };
     const result = await work(transaction);
     this.players = players;
+    this.scoreEntries = scoreEntries;
     this.receipts = receipts;
     this.streams = streams;
     this.events = events;
@@ -137,7 +171,10 @@ const activeGameplayRelease: GameplayReleaseReader = {
   }),
 };
 
-function commandsFor(database: MemoryPlayerDatabase, ids = new SequentialIds()) {
+function commandsFor(
+  database: MemoryPlayerDatabase,
+  ids = new SequentialIds(),
+) {
   return new PostgresPlayerCommands(
     new PostgresPlayerRepository(),
     new PostgresCommandReceipts(database),
@@ -151,8 +188,18 @@ function commandsFor(database: MemoryPlayerDatabase, ids = new SequentialIds()) 
 test("player creation commits one profile, receipt, and event, then replays", async () => {
   const database = new MemoryPlayerDatabase();
   const commands = commandsFor(database);
-  const first = await commands.create(accountId, input, "create-player-key-0001", traceId);
-  const replay = await commands.create(accountId, input, "create-player-key-0001", traceId);
+  const first = await commands.create(
+    accountId,
+    input,
+    "create-player-key-0001",
+    traceId,
+  );
+  const replay = await commands.create(
+    accountId,
+    input,
+    "create-player-key-0001",
+    traceId,
+  );
 
   assert.equal(first.replayed, false);
   assert.equal(replay.replayed, true);
@@ -200,10 +247,118 @@ test("invalid PlayerCreated event rolls back profile and receipt", async () => {
   const commands = commandsFor(database);
 
   await assert.rejects(
-    commands.create(accountId, input, "create-player-key-0005", "invalid-trace"),
+    commands.create(
+      accountId,
+      input,
+      "create-player-key-0005",
+      "invalid-trace",
+    ),
     /Invalid outbox event envelope/,
   );
   assert.equal(database.players.size, 0);
   assert.equal(database.receipts.size, 0);
   assert.equal(database.events.length, 0);
+});
+
+test("score effects update the ledger and replay without duplicate events", async () => {
+  const database = new MemoryPlayerDatabase();
+  const commands = commandsFor(database);
+  const created = await commands.create(
+    accountId,
+    input,
+    "create-player-key-score-01",
+    traceId,
+  );
+  const effectId = "settlement-points-query-player-01";
+
+  const first = await commands.applyScoreEffect(
+    effectId,
+    created.result.playerId,
+    25,
+    "settlement:query-1",
+    traceId,
+  );
+  const replay = await commands.applyScoreEffect(
+    effectId,
+    created.result.playerId,
+    25,
+    "settlement:query-1",
+    traceId,
+  );
+
+  assert.equal(first.replayed, false);
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.effect, first.effect);
+  assert.equal(first.effect.scoreBefore, 1000);
+  assert.equal(first.effect.scoreAfter, 1025);
+  assert.equal(first.effect.effectiveDelta, 25);
+  assert.equal(database.scoreEntries.size, 1);
+  assert.equal(
+    database.events.filter((event) => event["eventType"] === "ScoreChanged")
+      .length,
+    1,
+  );
+});
+
+test("score effect keys conflict on changed parameters and clamp at the cap", async () => {
+  const database = new MemoryPlayerDatabase();
+  const commands = commandsFor(database);
+  const created = await commands.create(
+    accountId,
+    input,
+    "create-player-key-score-02",
+    traceId,
+  );
+  const player = database.players.get(created.result.playerId)!;
+  database.players.set(created.result.playerId, {
+    ...player,
+    score: 999_999_995,
+  });
+
+  const effect = await commands.applyScoreEffect(
+    "settlement-points-query-player-02",
+    created.result.playerId,
+    20,
+    "settlement:query-2",
+    traceId,
+  );
+  assert.equal(effect.effect.scoreAfter, 1_000_000_000);
+  assert.equal(effect.effect.effectiveDelta, 5);
+  assert.equal(effect.effect.clamped, true);
+  await assert.rejects(
+    commands.applyScoreEffect(
+      "settlement-points-query-player-02",
+      created.result.playerId,
+      21,
+      "settlement:query-2",
+      traceId,
+    ),
+    IdempotencyConflictError,
+  );
+  assert.equal(database.scoreEntries.size, 1);
+});
+
+test("zero-point score effects still record a durable effect result", async () => {
+  const database = new MemoryPlayerDatabase();
+  const commands = commandsFor(database);
+  const created = await commands.create(
+    accountId,
+    input,
+    "create-player-key-score-03",
+    traceId,
+  );
+
+  const result = await commands.applyScoreEffect(
+    "settlement-points-query-player-03",
+    created.result.playerId,
+    0,
+    "settlement:query-3",
+    traceId,
+  );
+
+  assert.equal(result.effect.scoreBefore, 1000);
+  assert.equal(result.effect.scoreAfter, 1000);
+  assert.equal(result.effect.effectiveDelta, 0);
+  assert.equal(result.effect.clamped, false);
+  assert.equal(database.scoreEntries.size, 1);
 });

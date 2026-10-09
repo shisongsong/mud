@@ -19,6 +19,7 @@ export type {
   QueryScenario,
   QuerySite,
   QueryVote,
+  SettlementConfirmation,
   SettlementPlan,
 } from "./query.ts";
 export type { QueryRepository } from "./repository.ts";

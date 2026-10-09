@@ -173,7 +173,7 @@ export function advanceQuery(query, now) {
     }
     return query;
 }
-export function finalizeSettlement(query, confirmedEffectKeys) {
+export function finalizeSettlement(query, confirmations) {
     if (query.phase !== "settling") {
         throw new QueryRuleError("QUERY_NOT_SETTLING");
     }
@@ -181,7 +181,13 @@ export function finalizeSettlement(query, confirmedEffectKeys) {
         throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
     }
     const planned = new Set(query.settlementPlan.targets);
-    const confirmed = new Set(confirmedEffectKeys);
+    const confirmed = new Set(confirmations.map(({ effectKey }) => effectKey));
+    if (confirmed.size !== confirmations.length ||
+        confirmations.some(({ effectKey, resultReference }) => effectKey.trim().length === 0 ||
+            resultReference.trim().length === 0 ||
+            resultReference.length > 512)) {
+        throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+    }
     if ([...confirmed].some((key) => !planned.has(key))) {
         throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
     }
@@ -217,7 +223,28 @@ function buildSettlementPlan(query) {
         ...query.participants.map(({ playerId }) => `points:${query.queryId}:${playerId}`),
         ...query.actions.map(({ card }) => `knowledge:${query.queryId}:${card.cardId}`),
     ].sort();
-    return { settlementId: `settlement:${query.queryId}`, targets };
+    const pointAwards = query.participants
+        .map(({ playerId }) => {
+        const participated = query.actions.some((action) => action.playerId === playerId) ||
+            query.votes.some((vote) => vote.playerId === playerId);
+        const votedCorrectly = query.votes.some((vote) => vote.playerId === playerId &&
+            vote.choice !== "abstain" &&
+            vote.choice === query.scenario?.correctChoice);
+        return {
+            playerId,
+            requestedDelta: (participated ? 5 : 0) + (votedCorrectly ? 20 : 0),
+        };
+    })
+        .sort((left, right) => left.playerId < right.playerId
+        ? -1
+        : left.playerId > right.playerId
+            ? 1
+            : 0);
+    return {
+        settlementId: `settlement:${query.queryId}`,
+        targets,
+        pointAwards,
+    };
 }
 function resolveVote(query) {
     if (query.scenario === null)
