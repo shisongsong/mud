@@ -22,6 +22,18 @@ test("liveness endpoint returns a minimal response without touching dependencies
   assert.deepEqual(response.json(), { status: "ok" });
 });
 
+test("play page is served same-origin and root redirects to it", async () => {
+  const page = await app.inject({ method: "GET", url: "/play" });
+  assert.equal(page.statusCode, 200);
+  assert.match(page.headers["content-type"] ?? "", /text\/html/);
+  assert.match(page.body, /有效印记/);
+  assert.match(page.body, /\/query\//);
+
+  const root = await app.inject({ method: "GET", url: "/" });
+  assert.equal(root.statusCode, 302);
+  assert.equal(root.headers.location, "/play");
+});
+
 test("readiness endpoint checks its dependency and never exposes failure details", async () => {
   let checks = 0;
   const readyApp = createApp(loadEnvironment({ NODE_ENV: "test" }), {

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch --experimental-strip-types --env-file-if-exists=../../.env src/main.ts",
+    "dev": "node --watch --experimental-transform-types --experimental-strip-types --env-file-if-exists=../../.env src/main.ts",
     "start": "node --env-file-if-exists=../../.env dist/main.js",
     "db:migrate": "npm run build && node --env-file-if-exists=../../.env dist/platform/database/migrate.js",
     "build": "tsc -p tsconfig.json",

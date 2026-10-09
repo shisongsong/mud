@@ -18,6 +18,7 @@ import {
   registerQueryRoutes,
   type QueryRouteDependencies,
 } from "./server/query-routes.ts";
+import { registerPlayRoutes } from "./server/play-routes.ts";
 
 export interface AppDependencies {
   readonly auth?: AuthRouteDependencies;
@@ -33,6 +34,7 @@ export function createApp(
 ): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  registerPlayRoutes(app);
   app.get("/health/live", async () => ({ status: "ok" }));
   app.get("/health/ready", async (_request, reply) => {
     if (!dependencies.checkReadiness) {
