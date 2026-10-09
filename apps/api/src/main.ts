@@ -1,5 +1,5 @@
 import { createApp } from "./app.ts";
-import { loadEnvironment } from "./config/env.ts";
+import { loadEnvironment, resolvePublicOrigin } from "./config/env.ts";
 import {
   cryptoIdGenerator,
   cryptoRandomSource,
@@ -115,10 +115,7 @@ const app = createApp(environment, {
         });
       },
     }),
-    publicOrigin: new URL(
-      environment.PUBLIC_ORIGIN ??
-        `http://${environment.HOST}:${environment.PORT}`,
-    ).origin,
+    publicOrigin: resolvePublicOrigin(environment),
     secureCookies,
   },
   players: {

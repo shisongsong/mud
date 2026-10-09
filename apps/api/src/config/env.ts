@@ -2,15 +2,15 @@ import { z } from "zod";
 
 const envSchema = z
   .object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
-  HOST: z.string().default("127.0.0.1"),
-  PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
-  DATABASE_URL: z.string().url().optional(),
-  DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
-  REDIS_URL: z.string().url().default("redis://127.0.0.1:6379"),
-  PUBLIC_ORIGIN: z.string().url().optional(),
+    NODE_ENV: z
+      .enum(["development", "test", "production"])
+      .default("development"),
+    HOST: z.string().default("127.0.0.1"),
+    PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    DATABASE_URL: z.string().url().optional(),
+    DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
+    REDIS_URL: z.string().url().default("redis://127.0.0.1:6379"),
+    PUBLIC_ORIGIN: z.string().url().optional(),
   })
   .superRefine((environment, context) => {
     if (environment.NODE_ENV !== "production") return;
@@ -45,4 +45,28 @@ export function loadEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): AppEnvironment {
   return envSchema.parse(source);
+}
+
+export function resolvePublicOrigin(
+  environment: AppEnvironment,
+  codespaces: {
+    readonly CODESPACE_NAME?: string;
+    readonly GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN?: string;
+  } = process.env,
+): string {
+  if (environment.PUBLIC_ORIGIN) {
+    return new URL(environment.PUBLIC_ORIGIN).origin;
+  }
+
+  if (
+    environment.NODE_ENV === "development" &&
+    codespaces.CODESPACE_NAME &&
+    codespaces.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN
+  ) {
+    return new URL(
+      `https://${codespaces.CODESPACE_NAME}-${environment.PORT}.${codespaces.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`,
+    ).origin;
+  }
+
+  return new URL(`http://${environment.HOST}:${environment.PORT}`).origin;
 }

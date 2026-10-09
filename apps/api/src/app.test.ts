@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { createApp } from "./app.ts";
-import { loadEnvironment } from "./config/env.ts";
+import { loadEnvironment, resolvePublicOrigin } from "./config/env.ts";
 import type { PlayerActor } from "./kernel/actor.ts";
 
 let app: FastifyInstance;
@@ -32,6 +32,37 @@ test("play page is served same-origin and root redirects to it", async () => {
   const root = await app.inject({ method: "GET", url: "/" });
   assert.equal(root.statusCode, 302);
   assert.equal(root.headers.location, "/play");
+});
+
+test("public origin follows the Codespaces forwarded host in development", () => {
+  const environment = loadEnvironment({
+    NODE_ENV: "development",
+    PORT: "3000",
+  });
+  assert.equal(
+    resolvePublicOrigin(environment, {
+      CODESPACE_NAME: "echo-archive",
+      GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: "app.github.dev",
+    }),
+    "https://echo-archive-3000.app.github.dev",
+  );
+});
+
+test("explicit and non-Codespaces public origins remain unchanged", () => {
+  const explicit = loadEnvironment({
+    NODE_ENV: "development",
+    PUBLIC_ORIGIN: "https://game.example.com",
+  });
+  assert.equal(
+    resolvePublicOrigin(explicit, {
+      CODESPACE_NAME: "echo-archive",
+      GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: "app.github.dev",
+    }),
+    "https://game.example.com",
+  );
+
+  const local = loadEnvironment({ NODE_ENV: "development", PORT: "3000" });
+  assert.equal(resolvePublicOrigin(local, {}), "http://127.0.0.1:3000");
 });
 
 test("readiness endpoint checks its dependency and never exposes failure details", async () => {
