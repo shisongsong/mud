@@ -8,7 +8,8 @@ const envSchema = z
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
     DATABASE_URL: z.string().url().optional(),
     DATABASE_SSL_CA_FILE: z.string().min(1).optional(),
-    REDIS_URL: z.string().url().default("redis://127.0.0.1:6379"),
+    REDIS_URL: z.string().url().optional(),
+    REDIS_PASSWORD: z.string().min(1).optional(),
     PUBLIC_ORIGIN: z.string().url().optional(),
 })
     .superRefine((environment, context) => {
@@ -40,4 +41,28 @@ const envSchema = z
 });
 export function loadEnvironment(source = process.env) {
     return envSchema.parse(source);
+}
+export function resolvePublicOrigin(environment, codespaces = process.env) {
+    if (environment.PUBLIC_ORIGIN) {
+        return new URL(environment.PUBLIC_ORIGIN).origin;
+    }
+    if (environment.NODE_ENV === "development" &&
+        codespaces.CODESPACE_NAME &&
+        codespaces.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN) {
+        return new URL(`https://${codespaces.CODESPACE_NAME}-${environment.PORT}.${codespaces.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`).origin;
+    }
+    return new URL(`http://${environment.HOST}:${environment.PORT}`).origin;
+}
+export function resolveRedisUrl(environment) {
+    if (environment.REDIS_URL) {
+        const configuredHost = new URL(environment.REDIS_URL).hostname;
+        const isLoopback = ["127.0.0.1", "::1", "localhost"].includes(configuredHost);
+        if (environment.NODE_ENV !== "development" || !isLoopback) {
+            return environment.REDIS_URL;
+        }
+    }
+    if (environment.NODE_ENV === "development") {
+        return "rediss://nse-dev-redis.redis.cache.windows.net:6380";
+    }
+    return "redis://127.0.0.1:6379";
 }

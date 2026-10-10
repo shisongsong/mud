@@ -1,5 +1,5 @@
 import { createApp } from "./app.js";
-import { loadEnvironment } from "./config/env.js";
+import { loadEnvironment, resolvePublicOrigin, resolveRedisUrl, } from "./config/env.js";
 import { cryptoIdGenerator, cryptoRandomSource, } from "./kernel/crypto-adapters.js";
 import { systemClock } from "./kernel/ports.js";
 import { Argon2idPasswordHasher } from "./platform/argon2-password-hasher.js";
@@ -11,10 +11,14 @@ import { PostgresGameplayReleaseRepository } from "./platform/database/gameplay-
 import { createPostgresPool, PostgresUnitOfWork, } from "./platform/database/postgres.js";
 import { PostgresQueryCommands } from "./platform/database/query-commands.js";
 import { PostgresQueryRepository } from "./platform/database/query-repository.js";
+import { PostgresBoardCommands } from "./platform/database/board-commands.js";
+import { QuerySettlementCoordinator } from "./platform/database/query-settlement.js";
 import { PostgresQueryViews } from "./platform/database/query-views.js";
+import { PostgresScriptCommands } from "./platform/database/script-commands.js";
+import { PostgresScriptRepository } from "./platform/database/script-repository.js";
 import { startMaintenance } from "./platform/maintenance.js";
 import { PostgresPlayerCommands } from "./platform/database/player-commands.js";
-import { PostgresPlayerRepository } from "./platform/database/player-repository.js";
+import { PostgresPlayerFactionReader, PostgresPlayerRepository, } from "./platform/database/player-repository.js";
 import { PostgresIdentityService } from "./platform/identity.js";
 import { readSessionSecret } from "./server/auth-routes.js";
 import { createClient } from "redis";
@@ -26,9 +30,14 @@ const playerRepository = new PostgresPlayerRepository();
 const gameplayReleases = new PostgresGameplayReleaseRepository();
 const commandReceipts = new PostgresCommandReceipts(unitOfWork);
 const playerCommands = new PostgresPlayerCommands(playerRepository, commandReceipts, new PostgresOutbox(), gameplayReleases, cryptoIdGenerator, systemClock);
+const scriptCommands = new PostgresScriptCommands(new PostgresScriptRepository(unitOfWork), commandReceipts, new PostgresOutbox(), cryptoIdGenerator, systemClock);
 const queryRepository = new PostgresQueryRepository(unitOfWork);
-const queryCommands = new PostgresQueryCommands(queryRepository, commandReceipts, gameplayReleases, cryptoIdGenerator, systemClock);
-const queryViews = new PostgresQueryViews(unitOfWork, queryRepository, playerRepository, systemClock);
+const queryCommands = new PostgresQueryCommands(queryRepository, commandReceipts, gameplayReleases, cryptoIdGenerator, systemClock, cryptoRandomSource, new PostgresPlayerFactionReader(unitOfWork, playerRepository));
+const boardCommands = new PostgresBoardCommands(unitOfWork, systemClock);
+const querySettlement = new QuerySettlementCoordinator(queryRepository, queryCommands, boardCommands, playerCommands, scriptCommands, cryptoIdGenerator, (queryId, error) => {
+    app.log.error({ err: error, queryId }, "Query settlement recovery failed");
+});
+const queryViews = new PostgresQueryViews(unitOfWork, queryRepository, playerRepository, systemClock, gameplayReleases);
 const QUERY_MAINTENANCE_INTERVAL_MS = 5000;
 const stopQueryMaintenance = startMaintenance({
     intervalMs: QUERY_MAINTENANCE_INTERVAL_MS,
@@ -41,22 +50,53 @@ const stopQueryMaintenance = startMaintenance({
             name: "advance-due-queries",
             run: () => queryCommands.advanceDueQueries(),
         },
+        {
+            name: "advance-due-settlements",
+            run: () => querySettlement.advanceDueSettlements(),
+        },
     ],
     onError: (taskName, error) => {
         app.log.error({ err: error, task: taskName }, "Query maintenance failed");
     },
 });
 const secureCookies = environment.NODE_ENV === "production";
-const redis = createClient({ url: environment.REDIS_URL });
-redis.on("error", () => undefined);
+const redisUrl = resolveRedisUrl(environment);
+const redisUrlParts = new URL(redisUrl);
+const createRedisClient = () => {
+    const client = createClient({
+        url: redisUrl,
+        ...(environment.REDIS_PASSWORD
+            ? { password: environment.REDIS_PASSWORD }
+            : {}),
+        socket: {
+            ...(redisUrlParts.protocol === "rediss:" || redisUrlParts.port === "6380"
+                ? { tls: true }
+                : {}),
+            connectTimeout: 3000,
+            reconnectStrategy: false,
+        },
+    });
+    client.on("error", () => undefined);
+    return client;
+};
+let redis = createRedisClient();
 let redisConnection = null;
 const connectRedis = async () => {
     if (redis.isReady)
         return;
     if (!redisConnection) {
-        redisConnection = redis
+        const client = redis;
+        redisConnection = client
             .connect()
             .then(() => undefined)
+            .catch((error) => {
+            if (redis === client) {
+                if (client.isOpen)
+                    client.destroy();
+                redis = createRedisClient();
+            }
+            throw error;
+        })
             .finally(() => {
             redisConnection = null;
         });
@@ -75,14 +115,15 @@ const app = createApp(environment, {
                 });
             },
         }),
-        publicOrigin: new URL(environment.PUBLIC_ORIGIN ??
-            `http://${environment.HOST}:${environment.PORT}`).origin,
+        publicOrigin: resolvePublicOrigin(environment),
         secureCookies,
+        allowHostOriginFallback: environment.NODE_ENV === "development",
     },
     players: {
         identity,
         commands: playerCommands,
         getByAccountId: (accountId) => unitOfWork.transaction((transaction) => playerRepository.getByAccountId(transaction, accountId)),
+        listOwnedKnowledge: (actor) => scriptCommands.listOwnedKnowledge(actor),
         secureCookies,
     },
     gameplay: {

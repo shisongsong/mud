@@ -6,9 +6,18 @@ import type { PlayerActor } from "../../kernel/actor.ts";
 import { QueryRuleError } from "../../modules/query/public.ts";
 import type { ActiveGameplayRelease } from "./gameplay-release-repository.ts";
 import { PostgresCommandReceipts } from "../transactions/command-receipts.ts";
+import { PostgresOutbox } from "../transactions/outbox.ts";
+import { PostgresPlayerCommands } from "./player-commands.ts";
+import {
+  PostgresPlayerFactionReader,
+  PostgresPlayerRepository,
+} from "./player-repository.ts";
 import { PostgresUnitOfWork, createPostgresPool } from "./postgres.ts";
 import { PostgresQueryCommands } from "./query-commands.ts";
 import { PostgresQueryRepository } from "./query-repository.ts";
+import { QuerySettlementCoordinator } from "./query-settlement.ts";
+import { PostgresScriptCommands } from "./script-commands.ts";
+import { PostgresScriptRepository } from "./script-repository.ts";
 
 const release: ActiveGameplayRelease = {
   releaseId: "gameplay_integration",
@@ -91,10 +100,40 @@ async function cleanupRoom(
     (actor) => `player:${actor.accountId}:${actor.playerId}`,
   );
   await unitOfWork.transaction(async (transaction) => {
+    const scripts = await transaction.query<{ scriptId: string }>(
+      `SELECT "scriptId" FROM "script"."Scripts" WHERE "queryId" = @queryId;`,
+      { queryId },
+    );
+    const streamIds = [
+      queryId,
+      ...actors.map(({ playerId }) => playerId),
+      ...scripts.map(({ scriptId }) => scriptId),
+    ];
+    const streamParameters = Object.fromEntries(
+      streamIds.map((streamId, index) => [`streamId${index}`, streamId]),
+    );
+    const streamPlaceholders = streamIds
+      .map((_, index) => `@streamId${index}`)
+      .join(", ");
+    await transaction.query(
+      `DELETE FROM "platform"."EventDeliveries"
+       WHERE "eventId" IN (
+         SELECT "eventId" FROM "platform"."OutboxEvents"
+         WHERE "streamId" IN (${streamPlaceholders})
+       );`,
+      streamParameters,
+    );
+    await transaction.query(
+      `DELETE FROM "platform"."OutboxEvents"
+       WHERE "streamId" IN (${streamPlaceholders});`,
+      streamParameters,
+    );
+    await transaction.query(
+      `DELETE FROM "platform"."OutboxStreams"
+       WHERE "streamId" IN (${streamPlaceholders});`,
+      streamParameters,
+    );
     for (const statement of [
-      `DELETE FROM "platform"."EventDeliveries" WHERE "streamId" = @queryId;`,
-      `DELETE FROM "platform"."OutboxEvents" WHERE "streamId" = @queryId;`,
-      `DELETE FROM "platform"."OutboxStreams" WHERE "streamId" = @queryId;`,
       `DELETE FROM "query"."QueryActions" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."QueryVotes" WHERE "queryId" = @queryId;`,
       `DELETE FROM "query"."ParticipationSlots" WHERE "queryId" = @queryId;`,
@@ -114,6 +153,46 @@ async function cleanupRoom(
         { actorScope },
       );
     }
+    const serviceReceiptPrefixes: readonly [string, string][] = [
+      ["service:worker:score", `points:${queryId}:`],
+      ["service:worker:script", `script-create:${queryId}:`],
+      ["service:worker:knowledge", `knowledge:${queryId}:`],
+    ];
+    for (const [actorScope, prefix] of serviceReceiptPrefixes) {
+      await transaction.query(
+        `DELETE FROM "platform"."CommandReceipts"
+         WHERE "actorScope" = @actorScope AND "idempotencyKey" LIKE @keyPrefix;`,
+        { actorScope, keyPrefix: `${prefix}%` },
+      );
+    }
+  });
+}
+
+async function cleanupPlayers(
+  unitOfWork: PostgresUnitOfWork,
+  actors: readonly PlayerActor[],
+): Promise<void> {
+  await unitOfWork.transaction(async (transaction) => {
+    const playerParameters = Object.fromEntries(
+      actors.map(({ playerId }, index) => [`playerId${index}`, playerId]),
+    );
+    const accountParameters = Object.fromEntries(
+      actors.map(({ accountId }, index) => [`accountId${index}`, accountId]),
+    );
+    const playerPlaceholders = actors
+      .map((_, index) => `@playerId${index}`)
+      .join(", ");
+    const accountPlaceholders = actors
+      .map((_, index) => `@accountId${index}`)
+      .join(", ");
+    await transaction.query(
+      `DELETE FROM "player"."Players" WHERE "playerId" IN (${playerPlaceholders});`,
+      playerParameters,
+    );
+    await transaction.query(
+      `DELETE FROM "identity"."Accounts" WHERE "accountId" IN (${accountPlaceholders});`,
+      accountParameters,
+    );
   });
 }
 
@@ -132,6 +211,8 @@ test(
       },
       { next: () => randomUUID() },
       { now: () => new Date() },
+      undefined,
+      { getFactionId: async () => "faction_1" },
     );
     const actors: PlayerActor[] = Array.from({ length: 4 }, () => ({
       kind: "player",
@@ -238,15 +319,28 @@ test(
     const repository = new PostgresQueryRepository(unitOfWork);
     const start = Math.floor(Date.now() / 1000) * 1000;
     let current = start;
+    const players = new PostgresPlayerRepository();
+    const receipts = new PostgresCommandReceipts(unitOfWork);
+    const ids = { next: () => randomUUID() };
+    const clock = { now: () => new Date(current) };
+    const gameplayReleases = {
+      getActiveGameplayRelease: async () => release,
+      getGameplayReleaseById: async () => release,
+    };
+    const factions = [
+      "faction_1",
+      "faction_2",
+      "faction_3",
+      "faction_4",
+    ] as const;
     const commands = new PostgresQueryCommands(
       repository,
-      new PostgresCommandReceipts(unitOfWork),
-      {
-        getActiveGameplayRelease: async () => release,
-        getGameplayReleaseById: async () => release,
-      },
-      { next: () => randomUUID() },
-      { now: () => new Date(current) },
+      receipts,
+      gameplayReleases,
+      ids,
+      clock,
+      undefined,
+      new PostgresPlayerFactionReader(unitOfWork, players),
     );
     const actors: PlayerActor[] = Array.from({ length: 4 }, () => ({
       kind: "player",
@@ -257,6 +351,31 @@ test(
     let queryId: string | undefined;
 
     try {
+      await unitOfWork.transaction(async (transaction) => {
+        for (const [index, actor] of actors.entries()) {
+          const suffix = actor.accountId.replaceAll("-", "").slice(0, 26);
+          await transaction.query(
+            `INSERT INTO "identity"."Accounts"
+               ("accountId", "username", "passwordHash")
+             VALUES (@accountId, @username, 'integration-only-hash');`,
+            { accountId: actor.accountId, username: `saga_${suffix}` },
+          );
+          await transaction.query(
+            `INSERT INTO "player"."Players"
+               ("playerId", "accountId", "displayName", "factionId", "powerId",
+                "professionId", "gameplayReleaseId")
+             VALUES (@playerId, @accountId, @displayName, @factionId, 'power_1',
+                     'profession_1', @gameplayReleaseId);`,
+            {
+              playerId: actor.playerId,
+              accountId: actor.accountId,
+              displayName: `Saga Player ${index + 1}`,
+              factionId: factions[index]!,
+              gameplayReleaseId: release.releaseId,
+            },
+          );
+        }
+      });
       const created = await commands.create(
         actors[0]!,
         { templateId: "trial_1", gameplayReleaseId: release.releaseId },
@@ -297,6 +416,9 @@ test(
       assert.equal(settling?.phase, "settling");
       const targets = settling?.settlementPlan?.targets ?? [];
       assert.equal(targets.length, 6);
+      const exploredCardId = settling?.actions[0]?.card.cardId;
+      assert.ok(exploredCardId);
+      assert.ok(targets.includes(`knowledge:${roomId}:${exploredCardId}`));
       const expectedAward = (actorIndex: number) =>
         (actorIndex < 2 ? 5 : 0) +
         (settling?.scenario?.correctChoice === "choice_1" && actorIndex < 2
@@ -345,17 +467,59 @@ test(
       );
       assert.equal((await repository.get(roomId))?.phase, "settling");
 
-      const finalized = await commands.finalizeSettlement(
-        roomId,
-        confirmations([...targets].reverse()),
+      const playerCommands = new PostgresPlayerCommands(
+        players,
+        receipts,
+        new PostgresOutbox(),
+        gameplayReleases,
+        ids,
+        clock,
       );
-      assert.equal(finalized.replayed, false);
+      const scriptCommands = new PostgresScriptCommands(
+        new PostgresScriptRepository(unitOfWork),
+        receipts,
+        new PostgresOutbox(),
+        ids,
+        clock,
+      );
+      const coordinator = new QuerySettlementCoordinator(
+        repository,
+        commands,
+        {
+          applyDelta: async (effectId: string) => ({
+            resultReference: `isolated-board-effect:${effectId}`,
+            replayed: false,
+          }),
+        },
+        playerCommands,
+        scriptCommands,
+        ids,
+        (_failedQueryId, error) => {
+          throw error;
+        },
+      );
+      assert.equal(await coordinator.advanceDueSettlements(), 1);
+      const completed = await repository.get(roomId);
+      assert.equal(completed?.phase, "completed");
+      const scripts = await unitOfWork.transaction((transaction) =>
+        transaction.query<{ cardId: string; playerId: string }>(
+          `SELECT "cardId" AS "cardId", "playerId" AS "playerId"
+           FROM "script"."Scripts" WHERE "queryId" = @queryId;`,
+          { queryId: roomId },
+        ),
+      );
+      assert.deepEqual(scripts, [
+        { cardId: exploredCardId, playerId: actors[0]!.playerId },
+      ]);
+
       const replayed = await commands.finalizeSettlement(
         roomId,
-        confirmations(targets),
+        (await repository.getSettlementConfirmations(roomId)).map(
+          ({ effectKey, resultReference }) => ({ effectKey, resultReference }),
+        ),
       );
       assert.equal(replayed.replayed, true);
-      assert.equal(replayed.aggregateVersion, finalized.aggregateVersion);
+      assert.equal(replayed.aggregateVersion, completed?.version);
       await assert.rejects(
         commands.finalizeSettlement(
           roomId,
@@ -379,9 +543,6 @@ test(
           error.code === "SETTLEMENT_PLAN_MISMATCH",
       );
 
-      const completed = await repository.get(roomId);
-      assert.equal(completed?.phase, "completed");
-
       const persistedConfirmations = await unitOfWork.transaction(
         (transaction) =>
           transaction.query<{
@@ -401,10 +562,54 @@ test(
         [...targets].sort(),
       );
       assert.ok(
-        persistedConfirmations.every(({ resultReference }) =>
-          resultReference.startsWith("integration-result:"),
+        persistedConfirmations.every(
+          ({ resultReference }) => resultReference.length > 0,
         ),
       );
+      const scorePlayerParameters = Object.fromEntries(
+        actors.map(({ playerId }, index) => [
+          `scorePlayerId${index}`,
+          playerId,
+        ]),
+      );
+      const scorePlayerPlaceholders = actors
+        .map((_, index) => `@scorePlayerId${index}`)
+        .join(", ");
+      const scores = await unitOfWork.transaction((transaction) =>
+        transaction.query<{ playerId: string; score: number }>(
+          `SELECT "playerId" AS "playerId", "score" AS "score"
+           FROM "player"."Players" WHERE "playerId" IN (${scorePlayerPlaceholders});`,
+          scorePlayerParameters,
+        ),
+      );
+      assert.deepEqual(
+        scores
+          .map(({ playerId, score }) => ({ playerId, score }))
+          .sort((left, right) => left.playerId.localeCompare(right.playerId)),
+        actors
+          .map((actor, index) => ({
+            playerId: actor.playerId,
+            score: 1_000 + expectedAward(index),
+          }))
+          .sort((left, right) => left.playerId.localeCompare(right.playerId)),
+      );
+      const knowledge = await unitOfWork.transaction((transaction) =>
+        transaction.query<{ sourceRef: string }>(
+          `SELECT k."sourceRef" AS "sourceRef"
+           FROM "script"."PlayerKnowledge" k
+           JOIN "script"."Scripts" s ON s."scriptId" = k."scriptId"
+           WHERE k."playerId" = @playerId AND s."queryId" = @queryId;`,
+          {
+            playerId: actors[0]!.playerId,
+            queryId: roomId,
+          },
+        ),
+      );
+      assert.deepEqual(knowledge, [
+        {
+          sourceRef: `query:${roomId}:card:${settling?.actions[0]?.card.cardId}`,
+        },
+      ]);
 
       const events = await unitOfWork.transaction((transaction) =>
         transaction.query<{
@@ -435,6 +640,7 @@ test(
         if (queryId !== undefined) {
           await cleanupRoom(unitOfWork, queryId, actors);
         }
+        await cleanupPlayers(unitOfWork, actors);
       } finally {
         await pool.end();
       }

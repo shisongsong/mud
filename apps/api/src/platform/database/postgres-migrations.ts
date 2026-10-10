@@ -487,4 +487,101 @@ CREATE INDEX "IX_PlayerKnowledge_owner" ON "script"."PlayerKnowledge"
   ("playerId", "grantedAt", "scriptId");
 `,
   },
+  {
+    id: "0013_board_ledger",
+    sql: `
+CREATE SCHEMA IF NOT EXISTS "board";
+CREATE TABLE "board"."BoardStates" (
+  "boardId" varchar(64) PRIMARY KEY,
+  "version" bigint NOT NULL CHECK ("version" > 0),
+  "tension" smallint NOT NULL CHECK ("tension" BETWEEN 0 AND 100),
+  "factionStrengths" jsonb NOT NULL CHECK (jsonb_typeof("factionStrengths") = 'object'),
+  "updatedAt" timestamptz(3) NOT NULL
+);
+CREATE TABLE "board"."BoardEffects" (
+  "effectId" varchar(256) PRIMARY KEY,
+  "boardId" varchar(64) NOT NULL REFERENCES "board"."BoardStates"("boardId"),
+  "aggregateVersion" bigint NOT NULL CHECK ("aggregateVersion" > 1),
+  "reasonRef" varchar(256) NOT NULL CHECK (length(btrim("reasonRef")) > 0),
+  "requestedDelta" jsonb NOT NULL CHECK (jsonb_typeof("requestedDelta") = 'object'),
+  "effectiveDelta" jsonb NOT NULL CHECK (jsonb_typeof("effectiveDelta") = 'object'),
+  "clampReasons" jsonb NOT NULL CHECK (jsonb_typeof("clampReasons") = 'object'),
+  "appliedAt" timestamptz(3) NOT NULL,
+  UNIQUE ("boardId", "aggregateVersion")
+);
+CREATE FUNCTION "board"."reject_board_effect_mutation"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Board effects are immutable' USING ERRCODE = '55000';
+END;
+$$;
+CREATE TRIGGER "TR_BoardEffects_immutable"
+BEFORE UPDATE OR DELETE ON "board"."BoardEffects"
+FOR EACH ROW EXECUTE FUNCTION "board"."reject_board_effect_mutation"();
+INSERT INTO "board"."BoardStates"
+  ("boardId", "version", "tension", "factionStrengths", "updatedAt")
+VALUES
+  ('world_1', 1, 50,
+   '{"faction_1":50,"faction_2":50,"faction_3":50,"faction_4":50,"faction_5":50,"faction_6":50}'::jsonb,
+   now())
+ON CONFLICT ("boardId") DO NOTHING;
+`,
+  },
+  {
+    id: "0014_query_board_settlement_delta",
+    sql: `
+ALTER TABLE "query"."QueryParticipants"
+  ADD COLUMN "factionId" varchar(32);
+UPDATE "query"."QueryParticipants" AS participant
+SET "factionId" = player."factionId"
+FROM "player"."Players" AS player
+WHERE player."playerId" = participant."playerId";
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM "query"."QueryParticipants" WHERE "factionId" IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Cannot backfill Query participant faction snapshots';
+  END IF;
+END;
+$$;
+ALTER TABLE "query"."QueryParticipants"
+  ALTER COLUMN "factionId" SET NOT NULL,
+  ADD CONSTRAINT "CK_QueryParticipants_faction"
+    CHECK ("factionId" IN ('faction_1', 'faction_2', 'faction_3', 'faction_4', 'faction_5', 'faction_6'));
+
+ALTER TABLE "query"."SettlementPlans"
+  ADD COLUMN "boardDeltaJson" jsonb;
+UPDATE "query"."SettlementPlans" AS plan
+SET "boardDeltaJson" = jsonb_build_object(
+  'tensionDelta', CASE
+    WHEN room."selectedChoice" IS NULL THEN 1
+    WHEN room."selectedChoice" = room."correctChoice" THEN -2
+    ELSE 2
+  END,
+  'factionDeltas', COALESCE((
+    SELECT jsonb_object_agg(active."factionId", 1)
+    FROM (
+      SELECT DISTINCT participant."factionId"
+      FROM "query"."QueryParticipants" AS participant
+      WHERE participant."queryId" = plan."queryId"
+        AND (
+          EXISTS (SELECT 1 FROM "query"."QueryActions" AS action
+                  WHERE action."queryId" = participant."queryId"
+                    AND action."playerId" = participant."playerId")
+          OR EXISTS (SELECT 1 FROM "query"."QueryVotes" AS vote
+                     WHERE vote."queryId" = participant."queryId"
+                       AND vote."playerId" = participant."playerId")
+        )
+    ) AS active
+  ), '{}'::jsonb)
+)
+FROM "query"."QueryRooms" AS room
+WHERE room."queryId" = plan."queryId";
+ALTER TABLE "query"."SettlementPlans"
+  ALTER COLUMN "boardDeltaJson" SET NOT NULL,
+  ADD CONSTRAINT "CK_SettlementPlans_board_delta_object"
+    CHECK (jsonb_typeof("boardDeltaJson") = 'object');
+`,
+  },
 ];

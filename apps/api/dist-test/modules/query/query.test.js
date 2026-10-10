@@ -7,38 +7,38 @@ const scenario = {
     correctChoice: "choice_2",
 };
 function fullQuery(startedAt = 1_000) {
-    let query = createQuery("query_1", "player_1", "gameplay_v1", 0);
-    query = joinQuery(query, "player_2", 1, () => scenario);
-    query = joinQuery(query, "player_3", 2, () => scenario);
-    query = joinQuery(query, "player_4", startedAt, () => scenario);
+    let query = createQuery("query_1", "player_1", "gameplay_v1", 0, "faction_1");
+    query = joinQuery(query, "player_2", 1, () => scenario, "faction_2");
+    query = joinQuery(query, "player_3", 2, () => scenario, "faction_3");
+    query = joinQuery(query, "player_4", startedAt, () => scenario, "faction_4");
     return query;
 }
 test("fourth confirmed player starts exploring and pins one scenario", () => {
     let scenarioSelections = 0;
-    let query = createQuery("query_1", "player_1", "gameplay_v1", 0);
-    query = joinQuery(query, "player_2", 10, () => scenario);
-    query = joinQuery(query, "player_3", 20, () => scenario);
+    let query = createQuery("query_1", "player_1", "gameplay_v1", 0, "faction_1");
+    query = joinQuery(query, "player_2", 10, () => scenario, "faction_2");
+    query = joinQuery(query, "player_3", 20, () => scenario, "faction_3");
     query = joinQuery(query, "player_4", 30, () => {
         scenarioSelections += 1;
         return scenario;
-    });
+    }, "faction_4");
     assert.equal(query.phase, "exploring");
     assert.equal(query.version, 4);
     assert.equal(query.deadline, 120_030);
     assert.equal(query.scenario?.variantId, scenario.variantId);
     assert.equal(scenarioSelections, 1);
-    assert.throws(() => joinQuery(query, "player_5", 31, () => scenario), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_WAITING");
+    assert.throws(() => joinQuery(query, "player_5", 31, () => scenario, "faction_5"), (error) => error instanceof QueryRuleError && error.code === "QUERY_NOT_WAITING");
 });
 test("scenario random seed must fit its durable binary column", () => {
     const invalidScenario = { ...scenario, randomSeed: "x".repeat(65) };
-    let query = createQuery("query_1", "player_1", "gameplay_v1", 0);
-    query = joinQuery(query, "player_2", 1, () => invalidScenario);
-    query = joinQuery(query, "player_3", 2, () => invalidScenario);
-    assert.throws(() => joinQuery(query, "player_4", 3, () => invalidScenario), (error) => error instanceof QueryRuleError && error.code === "INVALID_SCENARIO");
+    let query = createQuery("query_1", "player_1", "gameplay_v1", 0, "faction_1");
+    query = joinQuery(query, "player_2", 1, () => invalidScenario, "faction_2");
+    query = joinQuery(query, "player_3", 2, () => invalidScenario, "faction_3");
+    assert.throws(() => joinQuery(query, "player_4", 3, () => invalidScenario, "faction_4"), (error) => error instanceof QueryRuleError && error.code === "INVALID_SCENARIO");
 });
 test("waiting query leaves and times out without changing membership incorrectly", () => {
-    const created = createQuery("query_1", "player_1", "gameplay_v1", 0);
-    const withSecond = joinQuery(created, "player_2", 1, () => scenario);
+    const created = createQuery("query_1", "player_1", "gameplay_v1", 0, "faction_1");
+    const withSecond = joinQuery(created, "player_2", 1, () => scenario, "faction_2");
     const afterLeave = leaveQuery(withSecond, "player_1", withSecond.version, 2);
     assert.equal(afterLeave.phase, "waiting");
     assert.deepEqual(afterLeave.participants.map(({ playerId }) => playerId), ["player_2"]);
@@ -106,9 +106,17 @@ test("deadline resolution uses choice_1 for a nonempty tie and null for all abst
     const tieResolved = advanceQuery(tied, tied.deadline);
     assert.equal(tieResolved.phase, "settling");
     assert.equal(tieResolved.selectedChoice, "choice_1");
+    assert.deepEqual(tieResolved.settlementPlan?.boardDelta, {
+        tensionDelta: 2,
+        factionDeltas: { faction_1: 1, faction_2: 1 },
+    });
     const noVotesResolved = advanceQuery(voting, voting.deadline);
     assert.equal(noVotesResolved.phase, "settling");
     assert.equal(noVotesResolved.selectedChoice, null);
+    assert.deepEqual(noVotesResolved.settlementPlan?.boardDelta, {
+        tensionDelta: 1,
+        factionDeltas: {},
+    });
 });
 test("settlement completes only after every planned effect is confirmed", () => {
     let query = fullQuery(10_000);
@@ -140,6 +148,10 @@ test("settlement completes only after every planned effect is confirmed", () => 
         { playerId: "player_3", requestedDelta: 0 },
         { playerId: "player_4", requestedDelta: 0 },
     ]);
+    assert.deepEqual(plan?.boardDelta, {
+        tensionDelta: -2,
+        factionDeltas: { faction_1: 1, faction_2: 1 },
+    });
     const targets = plan?.targets ?? [];
     const confirmations = (effectKeys) => effectKeys.map((effectKey) => ({
         effectKey,

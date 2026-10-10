@@ -15,7 +15,12 @@ import {
   writeReceiptSchema,
 } from "../../contracts/http.ts";
 import type { PlayerActor } from "../../kernel/actor.ts";
-import type { Clock, IdGenerator, RandomSource } from "../../kernel/ports.ts";
+import type {
+  Clock,
+  IdGenerator,
+  PlayerFactionReader,
+  RandomSource,
+} from "../../kernel/ports.ts";
 import { cryptoRandomSource } from "../../kernel/crypto-adapters.ts";
 import { requestDigest } from "../../kernel/idempotency.ts";
 import type {
@@ -64,15 +69,19 @@ export class PostgresQueryCommands {
     private readonly idGenerator: IdGenerator,
     private readonly clock: Clock,
     private readonly randomSource: RandomSource = cryptoRandomSource,
+    private readonly playerFactions: PlayerFactionReader = {
+      getFactionId: async () => null,
+    },
   ) {}
 
-  create(
+  async create(
     actor: PlayerActor,
     input: CreateQueryRequest,
     idempotencyKey: string,
     traceId?: string,
   ): Promise<CommandExecution<CreateQueryResponse>> {
     const normalizedInput = createQueryRequestSchema.parse(input);
+    const creatorFactionId = await this.requirePlayerFaction(actor.playerId);
     const now = this.clock.now();
     const nowMs = now.getTime();
     if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
@@ -105,6 +114,7 @@ export class PostgresQueryCommands {
           actor.playerId,
           normalizedInput.gameplayReleaseId,
           nowMs,
+          creatorFactionId,
         );
         await this.repository.createInTransaction(transaction, query);
         await this.appendEvent(
@@ -142,6 +152,7 @@ export class PostgresQueryCommands {
       readonly phase: "waiting" | "exploring";
     }>
   > {
+    const factionId = await this.requirePlayerFaction(actor.playerId);
     const now = this.clock.now();
     const nowMs = now.getTime();
     if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
@@ -169,6 +180,7 @@ export class PostgresQueryCommands {
           reservationId,
           queryId,
           actor.playerId,
+          factionId,
           nowMs,
         );
         return {
@@ -197,6 +209,7 @@ export class PostgresQueryCommands {
       const confirmation = await this.repository.confirmJoin(
         reservationExecution.result.resourceId,
         nowMs,
+        factionId,
         (transaction, query) => this.createScenario(transaction, query),
         (transaction, query) =>
           this.appendEvent(
@@ -222,6 +235,21 @@ export class PostgresQueryCommands {
       await this.releaseReservation(reservationExecution.result.resourceId);
       throw error;
     }
+  }
+
+  private async requirePlayerFaction(
+    playerId: string,
+  ): Promise<
+    | "faction_1"
+    | "faction_2"
+    | "faction_3"
+    | "faction_4"
+    | "faction_5"
+    | "faction_6"
+  > {
+    const factionId = await this.playerFactions.getFactionId(playerId);
+    if (factionId === null) throw new Error("Player profile is unavailable");
+    return factionId;
   }
 
   async releaseExpiredJoinReservations(limit = 50): Promise<number> {
@@ -309,6 +337,7 @@ export class PostgresQueryCommands {
       const query = await this.repository.getInTransaction(
         transaction,
         queryId,
+        true,
       );
       if (query === null) {
         const error = new Error("Query not found");
@@ -341,7 +370,29 @@ export class PostgresQueryCommands {
         return { replayed: true, aggregateVersion: query.version };
       }
 
-      const updated = finalizeSettlement(query, confirmations);
+      const persisted =
+        await this.repository.getSettlementConfirmationsInTransaction(
+          transaction,
+          queryId,
+        );
+      const persistedByKey = new Map(
+        persisted.map(({ effectKey, resultReference }) => [
+          effectKey,
+          resultReference,
+        ]),
+      );
+      const alreadyConfirmedKeys = new Set(persistedByKey.keys());
+      for (const { effectKey, resultReference } of confirmations) {
+        const previous = persistedByKey.get(effectKey);
+        if (previous !== undefined && previous !== resultReference) {
+          throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+        }
+        persistedByKey.set(effectKey, resultReference);
+      }
+      const allConfirmations = [...persistedByKey].map(
+        ([effectKey, resultReference]) => ({ effectKey, resultReference }),
+      );
+      const updated = finalizeSettlement(query, allConfirmations);
       const plan = updated.settlementPlan;
       if (plan === null) {
         throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
@@ -359,7 +410,9 @@ export class PostgresQueryCommands {
       await this.repository.recordSettlementConfirmationsInTransaction(
         transaction,
         queryId,
-        confirmations,
+        confirmations.filter(
+          ({ effectKey }) => !alreadyConfirmedKeys.has(effectKey),
+        ),
         nowMs,
       );
       await transaction.query(
@@ -384,6 +437,24 @@ export class PostgresQueryCommands {
       );
       return { replayed: false, aggregateVersion: updated.version };
     });
+  }
+
+  async confirmSettlementEffects(
+    queryId: string,
+    confirmations: readonly SettlementConfirmation[],
+  ): Promise<readonly SettlementConfirmation[]> {
+    const nowMs = this.clock.now().getTime();
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+      throw new TypeError("Clock returned an invalid timestamp");
+    }
+    return this.repository.runInTransaction((transaction) =>
+      this.repository.confirmSettlementEffectsInTransaction(
+        transaction,
+        queryId,
+        confirmations,
+        nowMs,
+      ),
+    );
   }
 
   private async releaseReservation(reservationId: string): Promise<void> {

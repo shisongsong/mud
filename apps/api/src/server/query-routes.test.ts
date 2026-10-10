@@ -201,6 +201,7 @@ const snapshot: QuerySnapshotResponse = {
       },
     ],
   },
+  result: null,
 };
 
 test("snapshot route returns the caller's view", async () => {

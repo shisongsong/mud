@@ -3,13 +3,93 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { loadEnvironment } from "../../config/env.ts";
 import type { PlayerActor } from "../../kernel/actor.ts";
+import type { QueryExecutor, UnitOfWork } from "../transactions/unit-of-work.ts";
 import { PostgresCommandReceipts } from "../transactions/command-receipts.ts";
-import { PostgresUnitOfWork, createPostgresPool } from "./postgres.ts";
 import { PostgresDeliveryQueue } from "../transactions/delivery-queue.ts";
 import { PostgresOutboxDispatcher } from "../transactions/outbox-dispatcher.ts";
 import { PostgresOutbox } from "../transactions/outbox.ts";
+import { PostgresBoardCommands } from "./board-commands.ts";
+import {
+  PostgresQueryExecutor,
+  PostgresUnitOfWork,
+  createPostgresPool,
+} from "./postgres.ts";
 import { PostgresQueryCommands } from "./query-commands.ts";
 import { PostgresQueryRepository } from "./query-repository.ts";
+
+test(
+  "PostgresBoardCommands rebuilds a damaged projection from its effect ledger",
+  { skip: process.env["RUN_DB_INTEGRATION"] !== "1" },
+  async () => {
+    const pool = createPostgresPool(loadEnvironment());
+    const client = await pool.connect();
+    await client.query("BEGIN");
+    let savepointId = 0;
+    const unitOfWork: UnitOfWork = {
+      transaction: async <T>(work: (executor: QueryExecutor) => Promise<T>) => {
+        const savepoint = `board_rebuild_${++savepointId}`;
+        await client.query(`SAVEPOINT ${savepoint}`);
+        try {
+          const result = await work(new PostgresQueryExecutor(client));
+          await client.query(`RELEASE SAVEPOINT ${savepoint}`);
+          return result;
+        } catch (error: unknown) {
+          await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+          await client.query(`RELEASE SAVEPOINT ${savepoint}`);
+          throw error;
+        }
+      },
+    };
+    const commands = new PostgresBoardCommands(unitOfWork, {
+      now: () => new Date(),
+    });
+
+    try {
+      const effectId = `board-rebuild-${randomUUID()}`;
+      await commands.applyDelta(
+        effectId,
+        { tensionDelta: 2, factionDeltas: { faction_1: 1 } },
+        "integration:board-rebuild",
+      );
+      const expectedRows = await unitOfWork.transaction((transaction) =>
+        transaction.query<{
+          version: number | string;
+          tension: number;
+          factionStrengths: Record<string, number> | string;
+        }>(
+          `SELECT "version", "tension", "factionStrengths"
+           FROM "board"."BoardStates" WHERE "boardId" = 'world_1';`,
+        ),
+      );
+      const expectedRow = expectedRows[0];
+      assert.ok(expectedRow);
+      const expectedFactions =
+        typeof expectedRow.factionStrengths === "string"
+          ? (JSON.parse(expectedRow.factionStrengths) as Record<string, number>)
+          : expectedRow.factionStrengths;
+
+      await unitOfWork.transaction((transaction) =>
+        transaction.query(
+          `UPDATE "board"."BoardStates"
+           SET "version" = "version" + 7, "tension" = 0,
+               "factionStrengths" = '{"faction_1":0,"faction_2":0,
+                 "faction_3":0,"faction_4":0,"faction_5":0,"faction_6":0}'::jsonb
+           WHERE "boardId" = 'world_1';`,
+        ),
+      );
+
+      assert.deepEqual(await commands.rebuildProjection(), {
+        version: Number(expectedRow.version),
+        tension: expectedRow.tension,
+        factions: expectedFactions,
+      });
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+      await pool.end();
+    }
+  },
+);
 
 test(
   "PostgresQueryCommands commits one event with its aggregate and receipt",
@@ -43,6 +123,8 @@ test(
       },
       { next: () => (idCalls++ === 0 ? queryId : randomUUID()) },
       { now: () => new Date() },
+      undefined,
+      { getFactionId: async () => "faction_1" },
     );
 
     try {
@@ -246,12 +328,12 @@ test(
 
           const dispatched = [];
           for (let index = 0; index < eventIds.length; index += 1) {
-            const batch = await dispatcher.dispatchAvailableInTransaction(
+            const result = await dispatcher.dispatchNextInTransaction(
               transaction,
-              10,
+              streamId,
             );
-            assert.equal(batch.length, 1);
-            dispatched.push(batch[0]!);
+            assert.notEqual(result, null);
+            dispatched.push(result!);
           }
           assert.deepEqual(
             dispatched.map((result) => result?.deliveriesCreated),

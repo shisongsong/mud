@@ -22,4 +22,5 @@ export type {
   SettlementConfirmation,
   SettlementPlan,
 } from "./query.ts";
+export type { BoardDelta, BoardFactionId } from "../board/public.ts";
 export type { QueryRepository } from "./repository.ts";

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PlayerActor } from "../../kernel/actor.ts";
-import type { Clock, IdGenerator } from "../../kernel/ports.ts";
+import type {
+  Clock,
+  IdGenerator,
+  PlayerFactionReader,
+} from "../../kernel/ports.ts";
 import {
   advanceQuery,
   createQuery,
@@ -120,6 +124,10 @@ const input = {
 };
 
 const clock: Clock = { now: () => new Date("2026-09-30T12:00:00.000Z") };
+const playerFactions: PlayerFactionReader = {
+  getFactionId: async () => "faction_1",
+};
+
 const now = clock.now().getTime();
 const activeGameplayRelease: GameplayReleaseReader = {
   getActiveGameplayRelease: async () => ({
@@ -173,6 +181,8 @@ function commandsForAggregate(
     release,
     new SequentialIds(),
     clock,
+    undefined,
+    playerFactions,
   );
   return {
     commands,
@@ -197,10 +207,29 @@ function votingQuery(): QueryAggregate {
     actor.playerId,
     "gameplay_v1",
     now - 200_000,
+    "faction_1",
   );
-  query = joinQuery(query, "player_2", now - 190_000, () => scenario);
-  query = joinQuery(query, "player_3", now - 180_000, () => scenario);
-  query = joinQuery(query, "player_4", now - 170_000, () => scenario);
+  query = joinQuery(
+    query,
+    "player_2",
+    now - 190_000,
+    () => scenario,
+    "faction_2",
+  );
+  query = joinQuery(
+    query,
+    "player_3",
+    now - 180_000,
+    () => scenario,
+    "faction_3",
+  );
+  query = joinQuery(
+    query,
+    "player_4",
+    now - 170_000,
+    () => scenario,
+    "faction_4",
+  );
   return advanceQuery(query, now - 49_000);
 }
 
@@ -215,6 +244,8 @@ test("create-query command atomically persists and replays its idempotent receip
     activeGameplayRelease,
     ids,
     clock,
+    undefined,
+    playerFactions,
   );
   const idempotencyKey = "create-query-key-0001";
   const traceId = "77777777-7777-4777-8777-777777777777";
@@ -277,6 +308,8 @@ test("create-query refuses the bootstrap release without writing anything", asyn
     bootstrapRelease,
     new SequentialIds(),
     clock,
+    undefined,
+    playerFactions,
   );
 
   await assert.rejects(
@@ -305,6 +338,8 @@ test("create-query command rejects reuse of its key for different normalized inp
     activeGameplayRelease,
     ids,
     clock,
+    undefined,
+    playerFactions,
   );
   const idempotencyKey = "create-query-key-0002";
 
@@ -328,6 +363,8 @@ test("create-query rolls back when its Outbox event envelope is invalid", async 
     activeGameplayRelease,
     new SequentialIds(),
     clock,
+    undefined,
+    playerFactions,
   );
 
   await assert.rejects(
@@ -355,6 +392,7 @@ test("leave-query command commits one versioned mutation and replays its receipt
     actor.playerId,
     "gameplay_v1",
     now,
+    "faction_1",
   );
   const fixture = commandsForAggregate(query);
   const key = "leave-query-key-0001";
@@ -475,10 +513,21 @@ class JoinRepositoryStub {
   async confirmJoin(
     _reservationId: string,
     _now: number,
+    _factionId:
+      | "faction_1"
+      | "faction_2"
+      | "faction_3"
+      | "faction_4"
+      | "faction_5"
+      | "faction_6",
     createScenario: (
       transaction: QueryExecutor,
       query: QueryAggregate,
     ) => Promise<unknown>,
+    _afterConfirmed: (
+      transaction: QueryExecutor,
+      query: QueryAggregate,
+    ) => Promise<void>,
   ): Promise<{ readonly query: QueryAggregate; readonly replayed: boolean }> {
     this.confirmCalls += 1;
     if (this.confirmError) throw this.confirmError;
@@ -514,10 +563,29 @@ function explorationQuery(): QueryAggregate {
     actor.playerId,
     "gameplay_v1",
     now - 200_000,
+    "faction_1",
   );
-  query = joinQuery(query, "player_2", now - 190_000, () => scenario);
-  query = joinQuery(query, "player_3", now - 180_000, () => scenario);
-  return joinQuery(query, "player_4", now - 170_000, () => scenario);
+  query = joinQuery(
+    query,
+    "player_2",
+    now - 190_000,
+    () => scenario,
+    "faction_2",
+  );
+  query = joinQuery(
+    query,
+    "player_3",
+    now - 180_000,
+    () => scenario,
+    "faction_3",
+  );
+  return joinQuery(
+    query,
+    "player_4",
+    now - 170_000,
+    () => scenario,
+    "faction_4",
+  );
 }
 
 function joinFixture(release: GameplayReleaseReader = joinGameplayRelease) {
@@ -528,6 +596,8 @@ function joinFixture(release: GameplayReleaseReader = joinGameplayRelease) {
     release,
     new SequentialIds(),
     clock,
+    undefined,
+    playerFactions,
   );
   return { commands, repository };
 }

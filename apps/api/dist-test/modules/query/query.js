@@ -11,11 +11,12 @@ export class QueryRuleError extends Error {
         this.name = "QueryRuleError";
     }
 }
-export function createQuery(queryId, creatorPlayerId, gameplayReleaseId, now) {
+export function createQuery(queryId, creatorPlayerId, gameplayReleaseId, now, creatorFactionId) {
     requireText(queryId, "queryId");
     requireText(creatorPlayerId, "creatorPlayerId");
     requireText(gameplayReleaseId, "gameplayReleaseId");
     requireTimestamp(now);
+    requireFactionId(creatorFactionId);
     return {
         queryId,
         createdByPlayerId: creatorPlayerId,
@@ -26,15 +27,18 @@ export function createQuery(queryId, creatorPlayerId, gameplayReleaseId, now) {
         deadline: now + WAITING_DURATION_MS,
         explorationStartedAt: null,
         scenario: null,
-        participants: [{ playerId: creatorPlayerId, joinedAt: now }],
+        participants: [
+            { playerId: creatorPlayerId, factionId: creatorFactionId, joinedAt: now },
+        ],
         actions: [],
         votes: [],
         selectedChoice: null,
         settlementPlan: null,
     };
 }
-export function joinQuery(query, playerId, now, createScenario) {
+export function joinQuery(query, playerId, now, createScenario, factionId) {
     requireTimestamp(now);
+    requireFactionId(factionId);
     if (query.phase !== "waiting")
         throw new QueryRuleError("QUERY_NOT_WAITING");
     if (query.deadline === null || now >= query.deadline) {
@@ -46,7 +50,10 @@ export function joinQuery(query, playerId, now, createScenario) {
     if (query.participants.length >= MAX_PARTICIPANTS) {
         throw new QueryRuleError("QUERY_FULL");
     }
-    const participants = [...query.participants, { playerId, joinedAt: now }];
+    const participants = [
+        ...query.participants,
+        { playerId, factionId, joinedAt: now },
+    ];
     if (participants.length < MAX_PARTICIPANTS) {
         return { ...query, participants, version: query.version + 1 };
     }
@@ -240,11 +247,42 @@ function buildSettlementPlan(query) {
         : left.playerId > right.playerId
             ? 1
             : 0);
+    const correctChoice = query.scenario?.correctChoice;
+    if (correctChoice === undefined) {
+        throw new QueryRuleError("INVALID_SCENARIO");
+    }
+    const activeFactions = new Set(query.participants
+        .filter(({ playerId }) => query.actions.some((action) => action.playerId === playerId) ||
+        query.votes.some((vote) => vote.playerId === playerId))
+        .map(({ factionId }) => factionId));
+    const factionDeltas = {};
+    for (const factionId of activeFactions)
+        factionDeltas[factionId] = 1;
     return {
         settlementId: `settlement:${query.queryId}`,
         targets,
+        boardDelta: {
+            tensionDelta: query.selectedChoice === null
+                ? 1
+                : query.selectedChoice === correctChoice
+                    ? -2
+                    : 2,
+            factionDeltas,
+        },
         pointAwards,
     };
+}
+function requireFactionId(factionId) {
+    if (![
+        "faction_1",
+        "faction_2",
+        "faction_3",
+        "faction_4",
+        "faction_5",
+        "faction_6",
+    ].includes(factionId)) {
+        throw new QueryRuleError("INVALID_SCENARIO");
+    }
 }
 function resolveVote(query) {
     if (query.scenario === null)

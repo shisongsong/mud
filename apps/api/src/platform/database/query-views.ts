@@ -4,6 +4,7 @@ import type { PlayerActor } from "../../kernel/actor.ts";
 import type { Clock } from "../../kernel/ports.ts";
 import { getAuthorizedQueryView } from "../../modules/query/public.ts";
 import type { UnitOfWork } from "../transactions/unit-of-work.ts";
+import type { GameplayReleaseReader } from "./gameplay-release-repository.ts";
 import { PostgresPlayerRepository } from "./player-repository.ts";
 import { PostgresQueryRepository } from "./query-repository.ts";
 
@@ -13,6 +14,7 @@ export class PostgresQueryViews {
     private readonly repository: PostgresQueryRepository,
     private readonly players: PostgresPlayerRepository,
     private readonly clock: Clock,
+    private readonly gameplayReleases: GameplayReleaseReader,
   ) {}
 
   /**
@@ -54,6 +56,58 @@ export class PostgresQueryViews {
         });
       }
 
+      let result = null;
+      if (query.phase === "completed") {
+        const scenario = query.scenario;
+        const plan = query.settlementPlan;
+        if (scenario === null || plan === null) {
+          throw new Error("Completed query is missing its pinned settlement");
+        }
+        const release = await this.gameplayReleases.getGameplayReleaseById(
+          transaction,
+          query.gameplayReleaseId,
+        );
+        const variant = release?.trial1?.variants.find(
+          ({ variantId }) => variantId === scenario.variantId,
+        );
+        if (!variant) {
+          throw new Error("Completed query has no pinned explanation");
+        }
+        const scoreEffect = await this.players.getScoreEffectInTransaction(
+          transaction,
+          `points:${query.queryId}:${actor.playerId}`,
+          actor.playerId,
+        );
+        if (!scoreEffect) {
+          throw new Error("Completed query has no participant score effect");
+        }
+        const choice1 = query.votes.filter(
+          ({ choice }) => choice === "choice_1",
+        ).length;
+        const choice2 = query.votes.filter(
+          ({ choice }) => choice === "choice_2",
+        ).length;
+        const abstentions = query.votes.filter(
+          ({ choice }) => choice === "abstain",
+        ).length;
+        result = {
+          selectedChoice: query.selectedChoice,
+          correctChoice: scenario.correctChoice,
+          voteCounts: {
+            choice1,
+            choice2,
+            abstentions,
+            notCast: query.participants.length - query.votes.length,
+          },
+          explanationKey: variant.explanationKey,
+          ownScore: {
+            requestedDelta: scoreEffect.requestedDelta,
+            awardedDelta: scoreEffect.effectiveDelta,
+            scoreAfter: scoreEffect.scoreAfter,
+          },
+        };
+      }
+
       return querySnapshotResponseSchema.parse({
         queryId: view.queryId,
         phase: view.phase,
@@ -72,6 +126,7 @@ export class PostgresQueryViews {
             text: card.text,
           })),
         },
+        result,
       });
     });
   }

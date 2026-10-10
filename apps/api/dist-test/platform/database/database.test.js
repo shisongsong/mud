@@ -96,6 +96,30 @@ test("player migration enforces one profile per account and bounded role fields"
     assert.match(playerMigration.sql, /"score" integer NOT NULL DEFAULT 1000/);
     assert.match(playerMigration.sql, /"aggregateVersion" bigint NOT NULL DEFAULT 1/);
 });
+test("Board migration creates a bounded projection and idempotent effect ledger", () => {
+    const boardMigration = migrations.find(({ id }) => id === "0013_board_ledger");
+    assert.ok(boardMigration);
+    assert.match(boardMigration.sql, /CREATE TABLE "board"\."BoardStates"/);
+    assert.match(boardMigration.sql, /"tension" BETWEEN 0 AND 100/);
+    assert.match(boardMigration.sql, /CREATE TABLE "board"\."BoardEffects"/);
+    assert.match(boardMigration.sql, /"effectId" varchar\(256\) PRIMARY KEY/);
+    assert.match(boardMigration.sql, /"requestedDelta" jsonb NOT NULL/);
+    assert.match(boardMigration.sql, /"effectiveDelta" jsonb NOT NULL/);
+    assert.match(boardMigration.sql, /TR_BoardEffects_immutable/);
+    assert.match(boardMigration.sql, /'world_1', 1, 50/);
+    assert.match(boardMigration.sql, /ON CONFLICT \("boardId"\) DO NOTHING/);
+});
+test("Query settlement migration snapshots factions and backfills Board deltas", () => {
+    const settlementMigration = migrations.find(({ id }) => id === "0014_query_board_settlement_delta");
+    assert.ok(settlementMigration);
+    assert.match(settlementMigration.sql, /SET "factionId" = player\."factionId"/);
+    assert.match(settlementMigration.sql, /Cannot backfill Query participant faction snapshots/);
+    assert.match(settlementMigration.sql, /ADD COLUMN "boardDeltaJson" jsonb/);
+    assert.match(settlementMigration.sql, /WHEN room\."selectedChoice" IS NULL THEN 1/);
+    assert.match(settlementMigration.sql, /THEN -2/);
+    assert.match(settlementMigration.sql, /ELSE 2/);
+    assert.match(settlementMigration.sql, /jsonb_object_agg\(active\."factionId", 1\)/);
+});
 test("bootstrap release migration seeds immutable versions without replacing pointers", () => {
     const releaseMigration = migrations.find(({ id }) => id === "0006_bootstrap_releases");
     assert.ok(releaseMigration);

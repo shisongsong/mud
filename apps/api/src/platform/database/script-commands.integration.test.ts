@@ -81,8 +81,9 @@ test(
           },
         );
         await transaction.query(
-          `INSERT INTO "query"."QueryParticipants" ("queryId", "playerId", "joinedAt")
-           VALUES (@queryId, @playerId, @now);`,
+          `INSERT INTO "query"."QueryParticipants"
+             ("queryId", "playerId", "joinedAt", "factionId")
+           VALUES (@queryId, @playerId, @now, 'faction_1');`,
           { queryId, playerId: playerIds[0]!, now },
         );
         await transaction.query(
@@ -108,7 +109,7 @@ test(
       );
       await unitOfWork.transaction((transaction) =>
         transaction.query(
-          `UPDATE "query"."QueryRooms" SET "phase" = 'completed'
+          `UPDATE "query"."QueryRooms" SET "phase" = 'settling'
            WHERE "queryId" = @queryId;`,
           { queryId },
         ),

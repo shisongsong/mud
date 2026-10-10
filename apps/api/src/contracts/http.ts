@@ -299,6 +299,22 @@ export const querySnapshotResponseSchema = strictObject({
       }),
     ),
   }),
+  result: strictObject({
+    selectedChoice: z.enum(["choice_1", "choice_2"]).nullable(),
+    correctChoice: z.enum(["choice_1", "choice_2"]),
+    voteCounts: strictObject({
+      choice1: z.number().int().min(0).max(4),
+      choice2: z.number().int().min(0).max(4),
+      abstentions: z.number().int().min(0).max(4),
+      notCast: z.number().int().min(0).max(4),
+    }),
+    explanationKey: nonEmptyIdSchema,
+    ownScore: strictObject({
+      requestedDelta: z.number().int().min(0),
+      awardedDelta: z.number().int().min(0),
+      scoreAfter: z.number().int().min(0),
+    }),
+  }).nullable(),
 });
 
 export const acceptedOperationResponseSchema = strictObject({

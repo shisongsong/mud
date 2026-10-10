@@ -32,10 +32,16 @@ const scenario: QueryScenario = {
 };
 
 function exploringQuery(): QueryAggregate {
-  let query = createQuery(queryId, playerIds[0]!, "gameplay_release_1", 1_000);
-  query = joinQuery(query, playerIds[1]!, 1_001, () => scenario);
-  query = joinQuery(query, playerIds[2]!, 1_002, () => scenario);
-  return joinQuery(query, playerIds[3]!, 1_003, () => scenario);
+  let query = createQuery(
+    queryId,
+    playerIds[0]!,
+    "gameplay_release_1",
+    1_000,
+    "faction_1",
+  );
+  query = joinQuery(query, playerIds[1]!, 1_001, () => scenario, "faction_2");
+  query = joinQuery(query, playerIds[2]!, 1_002, () => scenario, "faction_3");
+  return joinQuery(query, playerIds[3]!, 1_003, () => scenario, "faction_4");
 }
 
 class RecordingUnitOfWork implements UnitOfWork {
@@ -116,10 +122,13 @@ class RecordingUnitOfWork implements UnitOfWork {
       ];
     }
     if (statement.includes('FROM "query"."QueryParticipants"')) {
-      return aggregate.participants.map(({ playerId, joinedAt }) => ({
-        playerId,
-        joinedAt: new Date(joinedAt),
-      }));
+      return aggregate.participants.map(
+        ({ playerId, factionId, joinedAt }) => ({
+          playerId,
+          factionId,
+          joinedAt: new Date(joinedAt),
+        }),
+      );
     }
     if (statement.includes('FROM "query"."QueryActions"')) {
       return aggregate.actions.map(
@@ -229,10 +238,13 @@ class JoinConfirmationUnitOfWork implements UnitOfWork {
           ] as unknown as readonly Row[];
         }
         if (statement.includes('FROM "query"."QueryParticipants"')) {
-          return this.query.participants.map(({ playerId, joinedAt }) => ({
-            playerId,
-            joinedAt: new Date(joinedAt),
-          })) as unknown as readonly Row[];
+          return this.query.participants.map(
+            ({ playerId, factionId, joinedAt }) => ({
+              playerId,
+              factionId,
+              joinedAt: new Date(joinedAt),
+            }),
+          ) as unknown as readonly Row[];
         }
         if (statement.includes('FROM "query"."ParticipationSlots"')) {
           return [{ queryId: this.query.queryId }] as unknown as readonly Row[];
@@ -254,6 +266,7 @@ test("Query repository creates the aggregate and its initial participants atomic
     playerIds[0]!,
     "gameplay_release_1",
     1_000,
+    "faction_1",
   );
 
   await repository.create(query);
@@ -270,6 +283,7 @@ test("Query repository creates the aggregate and its initial participants atomic
   assert.deepEqual(unitOfWork.statements[1]!.parameters, {
     queryId,
     playerId: playerIds[0],
+    factionId: "faction_1",
     joinedAt: new Date(1_000),
   });
 });
@@ -290,6 +304,7 @@ test("join seat reservation locks capacity and writes only reserved state", asyn
       reservationId,
       queryId,
       playerIds[1]!,
+      "faction_2",
       2_000,
     ),
   );
@@ -312,6 +327,7 @@ test("join seat reservation locks capacity and writes only reserved state", asyn
   assert.deepEqual(unitOfWork.statements[3]!.parameters, {
     queryId,
     playerId: playerIds[1],
+    factionId: "faction_2",
     joinedAt: new Date(2_000),
   });
 });
@@ -332,6 +348,7 @@ test("join seat reservation rejects a room whose confirmed and reserved seats ar
         "30000000-0000-4000-8000-000000000002",
         queryId,
         playerIds[1]!,
+        "faction_2",
         2_000,
       ),
     ),
@@ -396,9 +413,15 @@ test("expired join reservation query selects only unconfirmed reservations past 
 });
 
 test("fourth confirmed join starts exploration and emits within the confirmation transaction", async () => {
-  let query = createQuery(queryId, playerIds[0]!, "gameplay_release_1", 1_000);
-  query = joinQuery(query, playerIds[1]!, 1_001, () => scenario);
-  query = joinQuery(query, playerIds[2]!, 1_002, () => scenario);
+  let query = createQuery(
+    queryId,
+    playerIds[0]!,
+    "gameplay_release_1",
+    1_000,
+    "faction_1",
+  );
+  query = joinQuery(query, playerIds[1]!, 1_001, () => scenario, "faction_2");
+  query = joinQuery(query, playerIds[2]!, 1_002, () => scenario, "faction_3");
   const unitOfWork = new JoinConfirmationUnitOfWork(query);
   const repository = new PostgresQueryRepository(unitOfWork);
   const emittedVersions: number[] = [];
@@ -408,6 +431,7 @@ test("fourth confirmed join starts exploration and emits within the confirmation
       transaction,
       "30000000-0000-4000-8000-000000000001",
       2_000,
+      "faction_4",
       async () => scenario,
       async (_transaction, confirmed) => {
         emittedVersions.push(confirmed.version);
@@ -467,7 +491,7 @@ test("Query repository rehydrates scenario and keeps evidence truth private", as
   );
 });
 
-test("Query repository uses aggregate-version compare-and-swap before replacing children", async () => {
+test("Query repository uses aggregate-version compare-and-swap before synchronizing children", async () => {
   const current = exploringQuery();
   const changed = inspectQuery(current, playerIds[0]!, "site_1", 1_004, () => ({
     cardId,
@@ -499,5 +523,11 @@ test("Query repository uses aggregate-version compare-and-swap before replacing 
     unitOfWork.statements.some(({ statement }) =>
       statement.includes('INSERT INTO "query"."QueryActions"'),
     ),
+  );
+  assert.equal(
+    unitOfWork.statements.some(({ statement }) =>
+      statement.startsWith('DELETE FROM "query"."QueryActions"'),
+    ),
+    false,
   );
 });

@@ -165,7 +165,10 @@ test("HTTP schemas reject forged fields and duplicate recipients", () => {
 
 test("auth contracts enforce credential limits and session authority shape", () => {
   const credentials = { username: "Player_01", password: "twelve_chars" };
-  assert.equal(registerAccountRequestSchema.safeParse(credentials).success, true);
+  assert.equal(
+    registerAccountRequestSchema.safeParse(credentials).success,
+    true,
+  );
   assert.equal(loginRequestSchema.safeParse(credentials).success, true);
   assert.equal(
     registerAccountRequestSchema.safeParse({ ...credentials, role: "admin" })
@@ -325,6 +328,7 @@ test("query, spread, and board responses enforce privacy and invariants", () => 
       voteChoice: null,
       evidenceCards: [{ cardId: "card_1", siteId: "site_1", text: "A clue" }],
     },
+    result: null,
   };
 
   assert.equal(

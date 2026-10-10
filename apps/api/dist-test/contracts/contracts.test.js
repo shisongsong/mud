@@ -211,6 +211,7 @@ test("query, spread, and board responses enforce privacy and invariants", () => 
             voteChoice: null,
             evidenceCards: [{ cardId: "card_1", siteId: "site_1", text: "A clue" }],
         },
+        result: null,
     };
     assert.equal(querySnapshotResponseSchema.safeParse(querySnapshot).success, true);
     assert.equal(querySnapshotResponseSchema.safeParse({

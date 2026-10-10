@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createApp } from "./app.js";
-import { loadEnvironment } from "./config/env.js";
+import { loadEnvironment, resolvePublicOrigin, resolveRedisUrl, } from "./config/env.js";
 let app;
 before(() => {
     app = createApp(loadEnvironment({ NODE_ENV: "test" }));
@@ -13,6 +13,54 @@ test("liveness endpoint returns a minimal response without touching dependencies
     const response = await app.inject({ method: "GET", url: "/health/live" });
     assert.equal(response.statusCode, 200);
     assert.deepEqual(response.json(), { status: "ok" });
+});
+test("play page is served same-origin and root redirects to it", async () => {
+    const page = await app.inject({ method: "GET", url: "/play" });
+    assert.equal(page.statusCode, 200);
+    assert.match(page.headers["content-type"] ?? "", /text\/html/);
+    assert.match(page.body, /有效印记/);
+    assert.match(page.body, /\/query\//);
+    const root = await app.inject({ method: "GET", url: "/" });
+    assert.equal(root.statusCode, 302);
+    assert.equal(root.headers.location, "/play");
+});
+test("public origin follows the Codespaces forwarded host in development", () => {
+    const environment = loadEnvironment({
+        NODE_ENV: "development",
+        PORT: "3000",
+    });
+    assert.equal(resolvePublicOrigin(environment, {
+        CODESPACE_NAME: "echo-archive",
+        GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: "app.github.dev",
+    }), "https://echo-archive-3000.app.github.dev");
+});
+test("explicit and non-Codespaces public origins remain unchanged", () => {
+    const explicit = loadEnvironment({
+        NODE_ENV: "development",
+        PUBLIC_ORIGIN: "https://game.example.com",
+    });
+    assert.equal(resolvePublicOrigin(explicit, {
+        CODESPACE_NAME: "echo-archive",
+        GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: "app.github.dev",
+    }), "https://game.example.com");
+    const local = loadEnvironment({ NODE_ENV: "development", PORT: "3000" });
+    assert.equal(resolvePublicOrigin(local, {}), "http://127.0.0.1:3000");
+});
+test("development defaults to the configured Azure Redis TLS endpoint", () => {
+    const development = loadEnvironment({ NODE_ENV: "development" });
+    assert.equal(resolveRedisUrl(development), "rediss://nse-dev-redis.redis.cache.windows.net:6380");
+    const explicit = loadEnvironment({
+        NODE_ENV: "development",
+        REDIS_URL: "rediss://other-redis.example.com:6380",
+    });
+    assert.equal(resolveRedisUrl(explicit), "rediss://other-redis.example.com:6380");
+    const localOverride = loadEnvironment({
+        NODE_ENV: "development",
+        REDIS_URL: "redis://127.0.0.1:6379",
+    });
+    assert.equal(resolveRedisUrl(localOverride), "rediss://nse-dev-redis.redis.cache.windows.net:6380");
+    const testEnvironment = loadEnvironment({ NODE_ENV: "test" });
+    assert.equal(resolveRedisUrl(testEnvironment), "redis://127.0.0.1:6379");
 });
 test("readiness endpoint checks its dependency and never exposes failure details", async () => {
     let checks = 0;

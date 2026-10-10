@@ -8,7 +8,7 @@
 
 状态：Backlog → Ready → InProgress → Review → Done；歧义/权限/环境/依赖问题转Blocked。实现Agent不能把未评审或未验证任务标Done。
 
-当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案和积分账本已落，Saga结算未完成）；T11 InProgress（Script/Knowledge持久化和持有人HTTP读取已落，尚未由Saga驱动）；T14 InProgress（Query创建/加入/退出/探索/投票/快照路由及phase维护已落，加入竞争故障恢复仍待专项验证）。旧文差异无法核实不再阻塞新设计。
+当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案、积分账本和结算效果适配已落，真实Saga集成待验）；T11 InProgress（Script/Knowledge持久化已接入结算Saga，真实Saga集成待验）；T13 InProgress（Board值域、幂等效果账本、Query结算delta及账本重建已落，checkpoint/运维恢复仍待验）；T14 InProgress（Query创建/加入/退出/探索/投票、完成结果投影及phase维护已落，加入竞争故障恢复和四玩家E2E仍待验）；T15 InProgress（持久目标确认与前向恢复协调器及真实组件集成已落，worker崩溃恢复待验）。旧文差异无法核实不再阻塞新设计。
 
 实现任务含代码、适用单元/集成测试、错误处理、可观测性和文档；不允许TODO、固定成功值或mock代替验收。T00为设计任务，只需独立文档评审，不要求不存在的代码/数据库测试；兼容性实测归T01、故障实测归T03–T08及后续任务。验证责任不能以“未实测”永久阻塞设计定稿。
 
@@ -148,13 +148,14 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 ### T13 世界与投影（1日）
 - 依赖：T05/T08；目录：board、platform公共投影机制。
 - 交付：0–100值、变更账本、投影/checkpoint/重建，Player资料与榜单适配经其负责人审查。
+- 当前交付：Board初始tension及六阵营strength均为50；delta按各自0–100边界夹取，PostgreSQL幂等效果账本记录requested/effective/clamp；Query固定结算plan保存tension及参与阵营delta，0013/0014迁移建立Board存储并为既存计划回填。账本重建从初始状态按aggregateVersion重放effective delta，检测缺号/不可能记录并修复projection；领域/adapter测试通过，真实PostgreSQL测试在外层事务中回滚，无持久污染。结算Saga已接入Board端口，但协调器实库用例使用隔离Board替身；checkpoint/定期重建运维接线仍待做，T13不Done。
 - 验收：重复不变数值、越界拒绝、顺序缺口处理、重建与正常结果一致。
 
 ### T14 试炼状态机与裁决（InProgress；1–2日）
 - 依赖：T10/T06/T08；目录：query状态机。
 - 交付：房间/成员/行动/投票、deadline、固定release/随机种子、不可变裁决和计划。
 - 子任务：T14a房间/创建/退出/独立ParticipationSlot协调/超时；T14b探索卡/匿名投票/变体与确定性裁决。Join必须持久化执行预留房间座位→独立占槽→确认成员，不跨聚合事务；只有四位确认才开始，恢复/超时可释放预留。执行M0 G01–G06、G09；源信息卡留Query，不能行动事务改Knowledge。
-- 当前交付包括纯Query状态机、PostgreSQL repository、create/join/leave/inspect/vote幂等命令、snapshot读取、对应HTTP端点及到期phase维护；生产组合根通过session和Player档案构造Actor，并接入active release校验。Join已持久化座位预留→ParticipationSlot占用→成员确认步骤；真实PostgreSQL覆盖四人加入、私有探索和结算，但并发抢房/逐步骤崩溃恢复仍缺专项验证。尚未完成自动结算Saga和完整首发内容/四玩家E2E，因此不表示T14子任务完成。
+- 当前交付包括纯Query状态机、PostgreSQL repository、create/join/leave/inspect/vote幂等命令、snapshot读取、对应HTTP端点及到期phase维护；生产组合根通过session和Player档案构造Actor，并接入active release校验。Join已持久化座位预留→ParticipationSlot占用→成员确认步骤；真实PostgreSQL集成覆盖四人加入、私有探索、Query结算计划/Finalize及Query→coordinator→Player/Script/Knowledge效果，完整集成门禁8/8通过；coordinator集成中Board端口使用隔离替身，Board SQL adapter未在共享世界状态上做实库写入。并发抢房/逐步骤崩溃恢复仍缺专项验证。完成态snapshot仅返回聚合票数、裁决/正确选项、固定release解释和调用者本人积分；试玩页已展示这些结果。完整首发内容/四玩家试玩E2E仍待验，故T14不Done。
 - 验收：四人探索/投票；同一玩家并发加入两房间及每个Join步骤崩溃/重试不双占、可安全释放预留；重复/平票/缺席/退出/逾期符合T00；重启不重抽。
 
 ### T15 结算Saga（1–2日）
@@ -162,7 +163,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 - 交付：逐玩家积分/信息、Board delta、固定计划effect确认引用、pending/failed/retry；Saga将完整effectKey/结果引用提交Query，Query不得访问其他模块表；全目标确认后FinalizeSettlement由Query校验并事务性完成/Outbox发布仅供Rules的QuerySettlementCompleted。内部payload的selectedCorrect不得进入客户端、普通WS、公开投影或一般日志。
 - 补齐：每张已探索卡先幂等创建/复用Script，再单独授予Knowledge，步骤键包含cardId；0奖励目标仍有确认结果，不凭是否有账本猜完成。
 - 验收：每步骤后崩溃均可恢复；并发无重复奖励；永久失败可定位，不提前completed；不读写其他模块内部表。
-- 当前交付：Query 在裁决时持久化固定目标和逐玩家积分delta（有效探索/投票+5，正确候选+20，未参与0）；FinalizeSettlement 校验每个目标的effectKey与非空resultReference，在同一事务记录确认、完成房间、释放参与槽并写仅供内部消费的QuerySettlementCompleted。完成态重放须与已存引用完全一致。Player积分effect已有原子账本和ScoreChanged；0010/0011迁移及真实PostgreSQL集成已覆盖join/inspect/vote/固定奖分计划/finalize/Player记账。Script的裁决卡创建/复用、独立Knowledge授予与授权查询底座已实现并由0012迁移及真实PostgreSQL覆盖。T15仍InProgress：Player/Script effect尚未由持久Saga调用；Board effect及Saga执行、pending/failed/retry协调尚未实现，当前Finalize入口仍是Query内部命令。
+- 当前交付：Query在裁决时持久化固定目标、逐玩家积分delta及Board delta；FinalizeSettlement校验所有固定effectKey与非空resultReference，在同一事务记录确认、完成房间、释放参与槽并写仅供内部消费的QuerySettlementCompleted。持久协调器逐目标应用Board、Player积分、每张探索卡的Script创建/复用及Knowledge授予，并在每个副作用后持久确认；重试跳过已确认目标，目标命令使用稳定effect key幂等重放，全部确认后才Finalize。maintenance已接入due settlement推进。完成态snapshot只公开聚合结果与调用者本人积分，试玩页呈现结果。单测覆盖中断、目标幂等重试、Knowledge失败恢复及完成态投影；真实PostgreSQL coordinator integration验证Query、Player积分、Script和Knowledge闭环通过，Board端口为隔离替身；Board SQL adapter另有事务回滚式实库重建测试。默认`npm test` 156项通过，PostgreSQL集成9/9通过，另完成typecheck/build/边界/定向格式检查。worker崩溃恢复和四玩家试玩E2E仍待完成，T15不Done。
 
 ### T16 大厅与受众（1日）
 - 依赖：T09/T10/T05；目录：social。

@@ -1,3 +1,5 @@
+import type { BoardDelta, BoardFactionId } from "../board/public.ts";
+
 export type QueryPhase =
   | "waiting"
   | "exploring"
@@ -34,12 +36,14 @@ interface QueryAction {
 
 interface QueryParticipant {
   readonly playerId: string;
+  readonly factionId: BoardFactionId;
   readonly joinedAt: number;
 }
 
 export interface SettlementPlan {
   readonly settlementId: string;
   readonly targets: readonly string[];
+  readonly boardDelta: BoardDelta;
   readonly pointAwards: readonly {
     readonly playerId: string;
     readonly requestedDelta: number;
@@ -123,11 +127,13 @@ export function createQuery(
   creatorPlayerId: string,
   gameplayReleaseId: string,
   now: number,
+  creatorFactionId: BoardFactionId,
 ): QueryAggregate {
   requireText(queryId, "queryId");
   requireText(creatorPlayerId, "creatorPlayerId");
   requireText(gameplayReleaseId, "gameplayReleaseId");
   requireTimestamp(now);
+  requireFactionId(creatorFactionId);
 
   return {
     queryId,
@@ -139,7 +145,9 @@ export function createQuery(
     deadline: now + WAITING_DURATION_MS,
     explorationStartedAt: null,
     scenario: null,
-    participants: [{ playerId: creatorPlayerId, joinedAt: now }],
+    participants: [
+      { playerId: creatorPlayerId, factionId: creatorFactionId, joinedAt: now },
+    ],
     actions: [],
     votes: [],
     selectedChoice: null,
@@ -152,8 +160,10 @@ export function joinQuery(
   playerId: string,
   now: number,
   createScenario: () => QueryScenario,
+  factionId: BoardFactionId,
 ): QueryAggregate {
   requireTimestamp(now);
+  requireFactionId(factionId);
   if (query.phase !== "waiting") throw new QueryRuleError("QUERY_NOT_WAITING");
   if (query.deadline === null || now >= query.deadline) {
     throw new QueryRuleError("QUERY_EXPIRED");
@@ -167,7 +177,10 @@ export function joinQuery(
     throw new QueryRuleError("QUERY_FULL");
   }
 
-  const participants = [...query.participants, { playerId, joinedAt: now }];
+  const participants = [
+    ...query.participants,
+    { playerId, factionId, joinedAt: now },
+  ];
   if (participants.length < MAX_PARTICIPANTS) {
     return { ...query, participants, version: query.version + 1 };
   }
@@ -435,11 +448,52 @@ function buildSettlementPlan(query: QueryAggregate): SettlementPlan {
           ? 1
           : 0,
     );
+  const correctChoice = query.scenario?.correctChoice;
+  if (correctChoice === undefined) {
+    throw new QueryRuleError("INVALID_SCENARIO");
+  }
+  const activeFactions = new Set(
+    query.participants
+      .filter(
+        ({ playerId }) =>
+          query.actions.some((action) => action.playerId === playerId) ||
+          query.votes.some((vote) => vote.playerId === playerId),
+      )
+      .map(({ factionId }) => factionId),
+  );
+  const factionDeltas: Partial<Record<BoardFactionId, number>> = {};
+  for (const factionId of activeFactions) factionDeltas[factionId] = 1;
   return {
     settlementId: `settlement:${query.queryId}`,
     targets,
+    boardDelta: {
+      tensionDelta:
+        query.selectedChoice === null
+          ? 1
+          : query.selectedChoice === correctChoice
+            ? -2
+            : 2,
+      factionDeltas,
+    },
     pointAwards,
   };
+}
+
+function requireFactionId(
+  factionId: string,
+): asserts factionId is BoardFactionId {
+  if (
+    ![
+      "faction_1",
+      "faction_2",
+      "faction_3",
+      "faction_4",
+      "faction_5",
+      "faction_6",
+    ].includes(factionId)
+  ) {
+    throw new QueryRuleError("INVALID_SCENARIO");
+  }
 }
 
 function resolveVote(query: QueryAggregate): QueryAggregate {

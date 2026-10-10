@@ -44,7 +44,7 @@ export class PostgresScriptRepository {
        FROM "query"."QueryActions" a
        JOIN "query"."QueryRooms" r ON r."queryId" = a."queryId"
        WHERE a."queryId" = @queryId AND a."playerId" = @playerId
-         AND a."cardId" = @cardId AND r."phase" = 'completed'
+         AND a."cardId" = @cardId AND r."phase" IN ('settling', 'completed')
        FOR SHARE OF r, a`,
       {
         queryId: input.queryId,

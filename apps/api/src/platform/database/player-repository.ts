@@ -1,5 +1,7 @@
 import type { CreatePlayerRequest } from "../../contracts/http.ts";
 import type { QueryExecutor } from "../transactions/unit-of-work.ts";
+import type { UnitOfWork } from "../transactions/unit-of-work.ts";
+import type { PlayerFactionReader } from "../../kernel/ports.ts";
 
 export interface PlayerProfile {
   readonly playerId: string;
@@ -57,6 +59,50 @@ export class PlayerNotFoundError extends Error {
 }
 
 export class PostgresPlayerRepository {
+  async getScoreEffectInTransaction(
+    transaction: QueryExecutor,
+    effectId: string,
+    playerId: string,
+  ): Promise<PlayerScoreEffect | null> {
+    const rows = await transaction.query<PlayerScoreEffectRow>(
+      `
+SELECT "effectId" AS "effectId", "playerId" AS "playerId",
+       "requestedDelta" AS "requestedDelta", "effectiveDelta" AS "effectiveDelta",
+       "scoreBefore" AS "scoreBefore", "scoreAfter" AS "scoreAfter",
+       "aggregateVersion" AS "aggregateVersion", "clamped" AS "clamped",
+       "reasonRef" AS "reasonRef"
+FROM "player"."ScoreEntries"
+WHERE "effectId" = @effectId AND "playerId" = @playerId;
+`,
+      { effectId, playerId },
+    );
+    const effect = rows[0];
+    return effect
+      ? {
+          ...effect,
+          requestedDelta: Number(effect.requestedDelta),
+          effectiveDelta: Number(effect.effectiveDelta),
+          scoreBefore: Number(effect.scoreBefore),
+          scoreAfter: Number(effect.scoreAfter),
+          aggregateVersion: Number(effect.aggregateVersion),
+        }
+      : null;
+  }
+
+  async getFactionIdInTransaction(
+    transaction: QueryExecutor,
+    playerId: string,
+  ): Promise<PlayerProfile["factionId"] | null> {
+    const rows = await transaction.query<{
+      readonly factionId: PlayerProfile["factionId"];
+    }>(
+      `SELECT "factionId" AS "factionId"
+       FROM "player"."Players" WHERE "playerId" = @playerId;`,
+      { playerId },
+    );
+    return rows[0]?.factionId ?? null;
+  }
+
   async applyScoreEffectInTransaction(
     transaction: QueryExecutor,
     input: Omit<
@@ -273,5 +319,18 @@ WHERE "accountId" = @accountId;
       score: Number(row.score),
       aggregateVersion: Number(row.aggregateVersion),
     };
+  }
+}
+
+export class PostgresPlayerFactionReader implements PlayerFactionReader {
+  constructor(
+    private readonly unitOfWork: UnitOfWork,
+    private readonly repository: PostgresPlayerRepository,
+  ) {}
+
+  getFactionId(playerId: string) {
+    return this.unitOfWork.transaction((transaction) =>
+      this.repository.getFactionIdInTransaction(transaction, playerId),
+    );
   }
 }

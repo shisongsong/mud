@@ -5,8 +5,11 @@ import { readSessionSecret } from "./server/auth-routes.js";
 import { registerPlayerRoutes, } from "./server/player-routes.js";
 import { registerGameplayRoutes, } from "./server/gameplay-routes.js";
 import { registerQueryRoutes, } from "./server/query-routes.js";
+import { registerPlayRoutes } from "./server/play-routes.js";
+import { isSameOriginRequest } from "./server/origin.js";
 export function createApp(_environment, dependencies = {}) {
     const app = Fastify({ logger: false });
+    registerPlayRoutes(app);
     app.get("/health/live", async () => ({ status: "ok" }));
     app.get("/health/ready", async (_request, reply) => {
         if (!dependencies.checkReadiness) {
@@ -29,10 +32,7 @@ export function createApp(_environment, dependencies = {}) {
                 request.url.startsWith("/auth/")) {
                 return;
             }
-            const origin = request.headers.origin;
-            if (typeof origin !== "string" ||
-                origin === "null" ||
-                safeOrigin(origin) !== auth.publicOrigin) {
+            if (!isSameOriginRequest(request, auth.publicOrigin, auth.allowHostOriginFallback ?? false)) {
                 const traceId = randomUUID();
                 return reply.code(403).send({
                     code: "ORIGIN_REJECTED",
@@ -78,12 +78,4 @@ export function createApp(_environment, dependencies = {}) {
         registerQueryRoutes(app, dependencies.queries);
     }
     return app;
-}
-function safeOrigin(value) {
-    try {
-        return new URL(value).origin;
-    }
-    catch {
-        return null;
-    }
 }

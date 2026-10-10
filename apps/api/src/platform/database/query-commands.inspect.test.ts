@@ -105,20 +105,29 @@ function explorationRoom(explorationStartAt: number, withScenario = true) {
     PLAYER_1,
     "gameplay_v1",
     explorationStartAt - 30_000,
+    "faction_1",
   );
   query = joinQuery(
     query,
     "player_2",
     explorationStartAt - 20_000,
     () => scenario,
+    "faction_2",
   );
   query = joinQuery(
     query,
     "player_3",
     explorationStartAt - 10_000,
     () => scenario,
+    "faction_3",
   );
-  query = joinQuery(query, "player_4", explorationStartAt, () => scenario);
+  query = joinQuery(
+    query,
+    "player_4",
+    explorationStartAt,
+    () => scenario,
+    "faction_4",
+  );
   return pinned === null ? { ...query, scenario: null } : query;
 }
 
@@ -357,7 +366,13 @@ test("inspect rejects a room without a scenario as INVALID_SCENARIO", async () =
 test("advanceDueQueries moves due rooms through waiting, exploring, and voting deadlines", async () => {
   // Waiting room whose 5-minute window has passed.
   const waiting = {
-    ...createQuery(QUERY_ID, PLAYER_1, "gameplay_v1", NOW - 400_000),
+    ...createQuery(
+      QUERY_ID,
+      PLAYER_1,
+      "gameplay_v1",
+      NOW - 400_000,
+      "faction_1",
+    ),
   };
   const waitingFx = fixtureFor(waiting);
   assert.equal(await waitingFx.commands.advanceDueQueries(), 1);

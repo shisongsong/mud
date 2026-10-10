@@ -12,6 +12,13 @@ export const playPageHtml = String.raw`<!doctype html>
     @media(max-width:800px){.layout{padding:22px 14px 40px}.shell{grid-template-columns:1fr}.rail{position:static}.auth-wrap{grid-template-columns:1fr}.auth-art{min-height:280px;padding:27px}.auth-art h1{font-size:38px}.map-art{max-height:150px}.auth-form{padding:28px}.play-grid{grid-template-columns:1fr}.page-heading{align-items:start;flex-direction:column}.participant-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:460px){.masthead{height:62px;padding:0 14px}.brand-name{font-size:16px}.brand-sub{display:none}.mast-right{font-size:9px}.sites{grid-template-columns:1fr}.site{min-height:58px}.vote-buttons{grid-template-columns:1fr}.phase-stamp{white-space:normal}.surface{padding:17px}}
   </style>
+  <style>
+    .result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;margin:18px 0;background:var(--line);border:1px solid var(--line)}
+    .result-cell{min-width:0;padding:12px;background:var(--chalk)}
+    .result-label{display:block;color:var(--muted);font:11px monospace}
+    .result-value{display:block;margin-top:4px;font:20px Georgia,serif;overflow-wrap:anywhere}
+    .result-explanation{margin:14px 0 0;padding-left:12px;border-left:2px solid var(--moss);color:var(--muted)}
+  </style>
 </head>
 <body>
   <header class="masthead">
@@ -83,7 +90,20 @@ export const playPageHtml = String.raw`<!doctype html>
             </section>
             <section id="settling-state" class="state-note hidden">本轮行动已截止，结算正在处理中。</section>
             <section id="failed-state" class="state-note hidden">结算遇到问题，房间仍被保留以等待恢复。</section>
-            <section id="completed-state" class="state-note hidden">试炼结算完成。</section>
+            <section id="completed-state" class="state-note hidden">
+              <div class="eyebrow">裁决公开</div><h3>本轮结案</h3>
+              <div id="result-details" class="hidden">
+                <div class="result-grid">
+                  <div class="result-cell"><span class="result-label">最终选择</span><strong id="result-selected" class="result-value"></strong></div>
+                  <div class="result-cell"><span class="result-label">正确答案</span><strong id="result-correct" class="result-value"></strong></div>
+                  <div class="result-cell"><span class="result-label">K1 票数</span><strong id="result-choice1" class="result-value"></strong></div>
+                  <div class="result-cell"><span class="result-label">K2 票数</span><strong id="result-choice2" class="result-value"></strong></div>
+                  <div class="result-cell"><span class="result-label">弃权 / 未投</span><strong id="result-abstentions" class="result-value"></strong></div>
+                  <div class="result-cell"><span class="result-label">你的积分</span><strong id="result-score" class="result-value"></strong></div>
+                </div>
+                <p id="result-explanation" class="result-explanation"></p>
+              </div>
+            </section>
             <section id="cancelled-state" class="state-note hidden">房间已取消。</section>
             <p class="notice" id="room-notice" role="status"></p>
             <div class="footer-note">状态每几秒同步一次 · 可分享房间编号邀请队友</div>
@@ -205,7 +225,23 @@ export const playPageHtml = String.raw`<!doctype html>
       if (snapshot.phase === 'voting') { show('voting-state'); $('vote-current').textContent = snapshot.self.voteChoice ? '当前选择：' + snapshot.self.voteChoice : '尚未提交选择'; }
       if (snapshot.phase === 'settling') show('settling-state');
       if (snapshot.phase === 'settlement_failed') show('failed-state');
-      if (snapshot.phase === 'completed') show('completed-state');
+      if (snapshot.phase === 'completed') {
+        show('completed-state');
+        if (snapshot.result) {
+          const result = snapshot.result;
+          const choiceLabel = (choice) => choice === 'choice_1' ? 'K1' : choice === 'choice_2' ? 'K2' : '无人选择';
+          $('result-selected').textContent = choiceLabel(result.selectedChoice);
+          $('result-correct').textContent = choiceLabel(result.correctChoice);
+          $('result-choice1').textContent = String(result.voteCounts.choice1);
+          $('result-choice2').textContent = String(result.voteCounts.choice2);
+          $('result-abstentions').textContent = result.voteCounts.abstentions + ' / ' + result.voteCounts.notCast;
+          $('result-score').textContent = '+' + result.ownScore.awardedDelta + ' · ' + result.ownScore.scoreAfter;
+          $('result-explanation').textContent = result.explanationKey === 'trial.explanation.current_mark' ? '选择与本轮有效印记一致的候选。' : '本轮裁决已公开。';
+          show('result-details');
+        } else {
+          hide('result-details');
+        }
+      }
       if (snapshot.phase === 'cancelled') show('cancelled-state');
     }
     function renderEvidence(snapshot) {

@@ -21,12 +21,17 @@ import {
 } from "./platform/database/postgres.ts";
 import { PostgresQueryCommands } from "./platform/database/query-commands.ts";
 import { PostgresQueryRepository } from "./platform/database/query-repository.ts";
+import { PostgresBoardCommands } from "./platform/database/board-commands.ts";
+import { QuerySettlementCoordinator } from "./platform/database/query-settlement.ts";
 import { PostgresQueryViews } from "./platform/database/query-views.ts";
 import { PostgresScriptCommands } from "./platform/database/script-commands.ts";
 import { PostgresScriptRepository } from "./platform/database/script-repository.ts";
 import { startMaintenance } from "./platform/maintenance.ts";
 import { PostgresPlayerCommands } from "./platform/database/player-commands.ts";
-import { PostgresPlayerRepository } from "./platform/database/player-repository.ts";
+import {
+  PostgresPlayerFactionReader,
+  PostgresPlayerRepository,
+} from "./platform/database/player-repository.ts";
 import { PostgresIdentityService } from "./platform/identity.ts";
 import { readSessionSecret } from "./server/auth-routes.ts";
 import { createClient } from "redis";
@@ -67,12 +72,27 @@ const queryCommands = new PostgresQueryCommands(
   gameplayReleases,
   cryptoIdGenerator,
   systemClock,
+  cryptoRandomSource,
+  new PostgresPlayerFactionReader(unitOfWork, playerRepository),
+);
+const boardCommands = new PostgresBoardCommands(unitOfWork, systemClock);
+const querySettlement = new QuerySettlementCoordinator(
+  queryRepository,
+  queryCommands,
+  boardCommands,
+  playerCommands,
+  scriptCommands,
+  cryptoIdGenerator,
+  (queryId, error) => {
+    app.log.error({ err: error, queryId }, "Query settlement recovery failed");
+  },
 );
 const queryViews = new PostgresQueryViews(
   unitOfWork,
   queryRepository,
   playerRepository,
   systemClock,
+  gameplayReleases,
 );
 const QUERY_MAINTENANCE_INTERVAL_MS = 5000;
 const stopQueryMaintenance = startMaintenance({
@@ -85,6 +105,10 @@ const stopQueryMaintenance = startMaintenance({
     {
       name: "advance-due-queries",
       run: () => queryCommands.advanceDueQueries(),
+    },
+    {
+      name: "advance-due-settlements",
+      run: () => querySettlement.advanceDueSettlements(),
     },
   ],
   onError: (taskName, error) => {

@@ -8,6 +8,8 @@ import type {
   QueryScenario,
   QuerySite,
   QueryVote,
+  BoardDelta,
+  BoardFactionId,
   SettlementConfirmation,
   SettlementPlan,
 } from "../../modules/query/public.ts";
@@ -33,6 +35,7 @@ interface QueryRoomRow {
 
 interface ParticipantRow {
   readonly playerId: string;
+  readonly factionId: BoardFactionId;
   readonly joinedAt: Date;
 }
 
@@ -105,6 +108,7 @@ VALUES
     reservationId: string,
     queryId: string,
     playerId: string,
+    factionId: BoardFactionId,
     now: number,
   ): Promise<{ readonly expiresAt: Date }> {
     const rooms = await transaction.query<{
@@ -172,11 +176,11 @@ VALUES
     await transaction.query(
       `
 INSERT INTO "query"."QueryParticipants"
-  ("queryId", "playerId", "joinedAt", "participationStatus")
+  ("queryId", "playerId", "factionId", "joinedAt", "participationStatus")
 VALUES
-  (@queryId, @playerId, @joinedAt, 'reserved');
+  (@queryId, @playerId, @factionId, @joinedAt, 'reserved');
 `,
-      { queryId, playerId, joinedAt: new Date(now) },
+      { queryId, playerId, factionId, joinedAt: new Date(now) },
     );
     return { expiresAt };
   }
@@ -350,10 +354,30 @@ LIMIT @limit;
     });
   }
 
+  async listSettlingQueryIds(limit: number): Promise<readonly string[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new TypeError("Settlement limit must be a positive integer");
+    }
+    return this.unitOfWork.transaction(async (transaction) => {
+      const rows = await transaction.query<{ readonly queryId: string }>(
+        `
+SELECT "queryId" AS "queryId"
+FROM "query"."QueryRooms"
+WHERE "phase" = 'settling'
+ORDER BY "createdAt", "queryId"
+LIMIT @limit;
+`,
+        { limit },
+      );
+      return rows.map(({ queryId }) => queryId);
+    });
+  }
+
   async confirmJoinInTransaction(
     transaction: QueryExecutor,
     reservationId: string,
     now: number,
+    factionId: BoardFactionId,
     createScenario: (
       transaction: QueryExecutor,
       query: QueryAggregate,
@@ -424,10 +448,16 @@ WHERE "reservationId" = @reservationId;`,
       current.participants.length === 3
         ? await createScenario(transaction, current)
         : null;
-    const updated = joinQuery(current, reservation.playerId, now, () => {
-      if (!scenario) throw new QueryRuleError("INVALID_SCENARIO");
-      return scenario;
-    });
+    const updated = joinQuery(
+      current,
+      reservation.playerId,
+      now,
+      () => {
+        if (!scenario) throw new QueryRuleError("INVALID_SCENARIO");
+        return scenario;
+      },
+      factionId,
+    );
     await transaction.query(
       `DELETE FROM "query"."QueryParticipants"
 WHERE "queryId" = @queryId AND "playerId" = @playerId
@@ -456,6 +486,7 @@ WHERE "reservationId" = @reservationId;`,
   async confirmJoin(
     reservationId: string,
     now: number,
+    factionId: BoardFactionId,
     createScenario: (
       transaction: QueryExecutor,
       query: QueryAggregate,
@@ -470,6 +501,7 @@ WHERE "reservationId" = @reservationId;`,
         transaction,
         reservationId,
         now,
+        factionId,
         createScenario,
         afterConfirmed,
       ),
@@ -485,6 +517,7 @@ WHERE "reservationId" = @reservationId;`,
   async getInTransaction(
     transaction: QueryExecutor,
     queryId: string,
+    forUpdate = false,
   ): Promise<QueryAggregate | null> {
     const rooms = await transaction.query<QueryRoomRow>(
       `
@@ -495,7 +528,7 @@ SELECT "queryId" AS "queryId", "createdByPlayerId" AS "createdByPlayerId",
        "scenarioVariantId" AS "scenarioVariantId", "randomSeed" AS "randomSeed",
        "correctChoice" AS "correctChoice", "selectedChoice" AS "selectedChoice"
 FROM "query"."QueryRooms"
-WHERE "queryId" = @queryId;
+WHERE "queryId" = @queryId${forUpdate ? " FOR UPDATE" : ""};
 `,
       { queryId },
     );
@@ -504,7 +537,8 @@ WHERE "queryId" = @queryId;
 
     const participants = await transaction.query<ParticipantRow>(
       `
-SELECT "playerId" AS "playerId", "joinedAt" AS "joinedAt"
+SELECT "playerId" AS "playerId", "factionId" AS "factionId",
+       "joinedAt" AS "joinedAt"
 FROM "query"."QueryParticipants"
 WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed'
 ORDER BY "joinedAt", "playerId";
@@ -532,9 +566,11 @@ ORDER BY "playerId";
     );
     const planRows = await transaction.query<{
       readonly settlementId: string;
+      readonly boardDelta: BoardDelta | string;
     }>(
       `
-SELECT "settlementId" AS "settlementId"
+SELECT "settlementId" AS "settlementId",
+       "boardDeltaJson" AS "boardDelta"
 FROM "query"."SettlementPlans"
 WHERE "queryId" = @queryId;
 `,
@@ -569,6 +605,7 @@ ORDER BY "playerId";
         : {
             settlementId: planRows[0].settlementId,
             targets: targetRows.map(({ effectKey }) => effectKey),
+            boardDelta: parseJson(planRows[0].boardDelta),
             pointAwards: pointAwardRows,
           };
     return hydrateQuery(room, participants, actions, votes, settlementPlan);
@@ -619,10 +656,6 @@ RETURNING "queryId" AS "queryId";
     if (updated.length === 0) return false;
 
     await transaction.query(
-      'DELETE FROM "query"."QueryActions" WHERE "queryId" = @queryId;',
-      { queryId: query.queryId },
-    );
-    await transaction.query(
       'DELETE FROM "query"."QueryVotes" WHERE "queryId" = @queryId;',
       { queryId: query.queryId },
     );
@@ -666,7 +699,8 @@ WHERE "queryId" = @queryId AND "participationStatus" = 'confirmed'${
         `
 INSERT INTO "query"."SettlementConfirmations"
   ("queryId", "effectKey", "resultReference", "confirmedAt")
-VALUES (@queryId, @effectKey, @resultReference, @confirmedAt);
+VALUES (@queryId, @effectKey, @resultReference, @confirmedAt)
+ON CONFLICT ("queryId", "effectKey") DO NOTHING;
 `,
         {
           queryId,
@@ -692,6 +726,70 @@ ORDER BY "effectKey";
 `,
       { queryId },
     );
+  }
+
+  async getSettlementConfirmations(
+    queryId: string,
+  ): Promise<readonly SettlementConfirmation[]> {
+    return this.unitOfWork.transaction((transaction) =>
+      this.getSettlementConfirmationsInTransaction(transaction, queryId),
+    );
+  }
+
+  async confirmSettlementEffectsInTransaction(
+    transaction: QueryExecutor,
+    queryId: string,
+    confirmations: readonly SettlementConfirmation[],
+    confirmedAt: number,
+  ): Promise<readonly SettlementConfirmation[]> {
+    const query = await this.getInTransaction(transaction, queryId, true);
+    if (!query) throw new Error("Query not found");
+    if (query.phase !== "settling" || query.settlementPlan === null) {
+      throw new QueryRuleError("QUERY_NOT_SETTLING");
+    }
+    if (
+      new Set(confirmations.map(({ effectKey }) => effectKey)).size !==
+        confirmations.length ||
+      confirmations.some(
+        ({ effectKey, resultReference }) =>
+          effectKey.trim().length === 0 ||
+          resultReference.trim().length === 0 ||
+          resultReference.length > 512 ||
+          !query.settlementPlan!.targets.includes(effectKey),
+      )
+    ) {
+      throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+    }
+
+    const existing = await this.getSettlementConfirmationsInTransaction(
+      transaction,
+      queryId,
+    );
+    const existingByKey = new Map(
+      existing.map(({ effectKey, resultReference }) => [
+        effectKey,
+        resultReference,
+      ]),
+    );
+    for (const confirmation of confirmations) {
+      const previous = existingByKey.get(confirmation.effectKey);
+      if (previous !== undefined && previous !== confirmation.resultReference) {
+        throw new QueryRuleError("SETTLEMENT_PLAN_MISMATCH");
+      }
+      if (previous === undefined) {
+        await this.recordSettlementConfirmationsInTransaction(
+          transaction,
+          queryId,
+          [confirmation],
+          confirmedAt,
+        );
+        existingByKey.set(confirmation.effectKey, confirmation.resultReference);
+      }
+    }
+    return [...existingByKey].map(([effectKey, resultReference]) => ({
+      effectKey,
+      resultReference,
+    }));
   }
 }
 
@@ -724,13 +822,15 @@ async function insertChildren(
   for (const participant of query.participants) {
     await transaction.query(
       `
-INSERT INTO "query"."QueryParticipants" ("queryId", "playerId", "joinedAt", "participationStatus")
-VALUES (@queryId, @playerId, @joinedAt, 'confirmed')
+INSERT INTO "query"."QueryParticipants"
+  ("queryId", "playerId", "factionId", "joinedAt", "participationStatus")
+VALUES (@queryId, @playerId, @factionId, @joinedAt, 'confirmed')
 ON CONFLICT ("queryId", "playerId") DO NOTHING;
 `,
       {
         queryId: query.queryId,
         playerId: participant.playerId,
+        factionId: participant.factionId,
         joinedAt: new Date(participant.joinedAt),
       },
     );
@@ -745,7 +845,8 @@ ON CONFLICT ("queryId", "playerId") DO NOTHING;
 INSERT INTO "query"."QueryActions"
   ("queryId", "playerId", "actionOrdinal", "siteId", "cardId", "evidenceText", "isTruth", "acceptedAt")
 VALUES
-  (@queryId, @playerId, @actionOrdinal, @siteId, @cardId, @evidenceText, @isTruth, @acceptedAt);
+  (@queryId, @playerId, @actionOrdinal, @siteId, @cardId, @evidenceText, @isTruth, @acceptedAt)
+ON CONFLICT ("queryId", "playerId", "actionOrdinal") DO NOTHING;
 `,
       {
         queryId: query.queryId,
@@ -758,6 +859,30 @@ VALUES
         acceptedAt: new Date(action.acceptedAt),
       },
     );
+    const persistedActions = await transaction.query<ActionRow>(
+      `SELECT "playerId" AS "playerId", "siteId" AS "siteId",
+              "cardId" AS "cardId", "evidenceText" AS "evidenceText",
+              "isTruth" AS "isTruth", "acceptedAt" AS "acceptedAt"
+       FROM "query"."QueryActions"
+       WHERE "queryId" = @queryId AND "playerId" = @playerId
+         AND "actionOrdinal" = @actionOrdinal;`,
+      {
+        queryId: query.queryId,
+        playerId: action.playerId,
+        actionOrdinal,
+      },
+    );
+    const persistedAction = persistedActions[0];
+    if (
+      !persistedAction ||
+      persistedAction.siteId !== action.siteId ||
+      persistedAction.cardId !== action.card.cardId ||
+      persistedAction.evidenceText !== action.card.text ||
+      persistedAction.isTruth !== action.card.isTruth ||
+      persistedAction.acceptedAt.getTime() !== action.acceptedAt
+    ) {
+      throw new Error("Persisted Query actions are immutable");
+    }
   }
 
   for (const vote of query.votes) {
@@ -782,11 +907,16 @@ async function insertSettlementPlan(
 ): Promise<void> {
   await transaction.query(
     `
-INSERT INTO "query"."SettlementPlans" ("queryId", "settlementId")
-VALUES (@queryId, @settlementId)
+INSERT INTO "query"."SettlementPlans"
+  ("queryId", "settlementId", "boardDeltaJson")
+VALUES (@queryId, @settlementId, @boardDeltaJson)
 ON CONFLICT ("queryId") DO NOTHING;
 `,
-    { queryId, settlementId: plan.settlementId },
+    {
+      queryId,
+      settlementId: plan.settlementId,
+      boardDeltaJson: JSON.stringify(plan.boardDelta),
+    },
   );
   for (const effectKey of plan.targets) {
     await transaction.query(
@@ -829,8 +959,9 @@ function hydrateQuery(
     deadline: room.deadline?.getTime() ?? null,
     explorationStartedAt: room.explorationStartedAt?.getTime() ?? null,
     scenario,
-    participants: participantRows.map(({ playerId, joinedAt }) => ({
+    participants: participantRows.map(({ playerId, factionId, joinedAt }) => ({
       playerId,
+      factionId,
       joinedAt: joinedAt.getTime(),
     })),
     actions: actionRows.map((row) => ({
@@ -877,4 +1008,8 @@ function hydrateCard(row: ActionRow): PrivateEvidenceCard {
     text: row.evidenceText,
     isTruth: row.isTruth,
   };
+}
+
+function parseJson<T>(value: T | string): T {
+  return typeof value === "string" ? (JSON.parse(value) as T) : value;
 }
