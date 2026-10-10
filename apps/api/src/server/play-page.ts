@@ -18,6 +18,8 @@ export const playPageHtml = String.raw`<!doctype html>
     .result-label{display:block;color:var(--muted);font:11px monospace}
     .result-value{display:block;margin-top:4px;font:20px Georgia,serif;overflow-wrap:anywhere}
     .result-explanation{margin:14px 0 0;padding-left:12px;border-left:2px solid var(--moss);color:var(--muted)}
+    .board-surface{margin-bottom:18px}.board-summary{display:grid;grid-template-columns:minmax(130px,.6fr) 2fr;gap:18px;align-items:center}.board-meter{height:10px;background:var(--line);overflow:hidden}.board-meter>span{display:block;height:100%;background:var(--ember);transition:width .35s ease}.faction-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 22px;margin-top:18px}.faction-row{display:grid;grid-template-columns:70px 1fr 34px;gap:10px;align-items:center;font-size:13px}.faction-row .board-meter{height:7px}.faction-row .board-meter>span{background:var(--moss)}.board-meta{display:flex;justify-content:space-between;gap:12px;margin-top:12px;color:var(--muted);font:11px monospace}.board-unavailable{color:var(--ember)}
+    @media(max-width:560px){.board-summary{grid-template-columns:1fr;gap:8px}.faction-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -72,6 +74,12 @@ export const playPageHtml = String.raw`<!doctype html>
         </aside>
         <div class="main-column">
           <div class="page-heading"><div><div class="eyebrow">试炼 01 · 有效印记</div><h1>现场记录</h1><p class="lede">核对线索，判断本轮有效印记对应的候选。</p></div><span class="phase-stamp" id="phase-stamp">等待建立房间</span></div>
+          <section id="board-surface" class="surface board-surface" aria-labelledby="board-heading">
+            <div class="surface-head"><div><div class="eyebrow">世界投影</div><h2 id="board-heading">全域态势</h2></div><span class="phase-stamp" id="board-version">载入中</span></div>
+            <div class="board-summary"><div><span class="result-label">全域张力</span><strong id="board-tension" class="result-value">--</strong></div><div class="board-meter" role="meter" aria-label="全域张力" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="board-tension-fill" style="width:0%"></span></div></div>
+            <div id="board-factions" class="faction-grid"></div>
+            <div class="board-meta"><span id="board-updated">世界状态读取中</span><span id="board-notice" role="status"></span></div>
+          </section>
           <section id="lobby-surface" class="surface">
             <div class="surface-head"><div><div class="eyebrow">新建调查</div><h2>召集四位调查员</h2></div><span class="phase-stamp">4 SEATS</span></div>
             <p class="lede">建房后分享房间编号。四人到齐，试炼自动开始。</p>
@@ -115,7 +123,7 @@ export const playPageHtml = String.raw`<!doctype html>
   <script>
   (() => {
     const $ = (id) => document.getElementById(id);
-    const state = { csrf: null, profile: null, release: null, roomId: localStorage.getItem('mud.roomId'), snapshot: null, serverOffset: 0, timer: null, busy: false, registering: false };
+    const state = { csrf: null, profile: null, release: null, roomId: localStorage.getItem('mud.roomId'), snapshot: null, serverOffset: 0, timer: null, boardTimer: null, busy: false, registering: false };
     const show = (id) => $(id).classList.remove('hidden');
     const hide = (id) => $(id).classList.add('hidden');
     const message = (id, text) => { $(id).textContent = text || ''; };
@@ -154,8 +162,35 @@ export const playPageHtml = String.raw`<!doctype html>
       $('player-name').textContent = state.profile.displayName;
       $('release-id').textContent = state.release.gameplayReleaseId;
       setScreen('game-screen');
+      await refreshBoard();
+      if (state.boardTimer) clearInterval(state.boardTimer);
+      state.boardTimer = setInterval(() => refreshBoard(), 15000);
       if (!state.release.queryEnabled) { $('create-room').disabled = true; message('lobby-notice','试炼暂未开放，请稍后再来。'); }
       if (state.roomId) { $('join-room-id').value = state.roomId; await openRoom(state.roomId); }
+    }
+    async function refreshBoard() {
+      try {
+        const snapshot = await api('/board');
+        $('board-version').textContent = 'WORLD · ' + snapshot.boardVersion;
+        $('board-tension').textContent = snapshot.tension + ' / 100';
+        const tensionMeter = $('board-tension-fill').parentElement;
+        tensionMeter.setAttribute('aria-valuenow', String(snapshot.tension));
+        $('board-tension-fill').style.width = snapshot.tension + '%';
+        const names = { faction_1: '第一阵营', faction_2: '第二阵营', faction_3: '第三阵营', faction_4: '第四阵营', faction_5: '第五阵营', faction_6: '第六阵营' };
+        const factions = $('board-factions'); factions.replaceChildren();
+        for (const faction of snapshot.factions) {
+          const row = document.createElement('div'); row.className = 'faction-row';
+          const name = document.createElement('span'); name.textContent = names[faction.factionId];
+          const meter = document.createElement('div'); meter.className = 'board-meter'; meter.setAttribute('role','meter'); meter.setAttribute('aria-label', names[faction.factionId]); meter.setAttribute('aria-valuemin','0'); meter.setAttribute('aria-valuemax','100'); meter.setAttribute('aria-valuenow', String(faction.strength));
+          const fill = document.createElement('span'); fill.style.width = faction.strength + '%'; meter.append(fill);
+          const value = document.createElement('strong'); value.textContent = String(faction.strength);
+          row.append(name,meter,value); factions.append(row);
+        }
+        $('board-updated').textContent = '更新于 ' + new Date(snapshot.updatedAt).toLocaleTimeString('zh-CN');
+        message('board-notice',''); $('board-notice').classList.remove('board-unavailable');
+      } catch (error) {
+        message('board-notice','暂不可用'); $('board-notice').classList.add('board-unavailable');
+      }
     }
     $('auth-toggle').addEventListener('click', () => setAuthMode(!state.registering));
     $('auth-form').addEventListener('submit', async (event) => {

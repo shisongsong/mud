@@ -22,6 +22,7 @@ import {
 import { PostgresQueryCommands } from "./platform/database/query-commands.ts";
 import { PostgresQueryRepository } from "./platform/database/query-repository.ts";
 import { PostgresBoardCommands } from "./platform/database/board-commands.ts";
+import { PostgresBoardViews } from "./platform/database/board-views.ts";
 import { QuerySettlementCoordinator } from "./platform/database/query-settlement.ts";
 import { PostgresQueryViews } from "./platform/database/query-views.ts";
 import { PostgresScriptCommands } from "./platform/database/script-commands.ts";
@@ -76,6 +77,7 @@ const queryCommands = new PostgresQueryCommands(
   new PostgresPlayerFactionReader(unitOfWork, playerRepository),
 );
 const boardCommands = new PostgresBoardCommands(unitOfWork, systemClock);
+const boardViews = new PostgresBoardViews(unitOfWork, systemClock);
 const querySettlement = new QuerySettlementCoordinator(
   queryRepository,
   queryCommands,
@@ -207,6 +209,19 @@ const app = createApp(environment, {
         playerId: profile.playerId,
       };
     },
+  },
+  board: {
+    identity,
+    secureCookies,
+    getPlayerActor: async (accountId) => {
+      const profile = await unitOfWork.transaction((transaction) =>
+        playerRepository.getByAccountId(transaction, accountId),
+      );
+      return profile
+        ? { kind: "player", accountId, playerId: profile.playerId }
+        : null;
+    },
+    views: boardViews,
   },
   checkReadiness: async () => {
     await pool.query("SELECT 1");

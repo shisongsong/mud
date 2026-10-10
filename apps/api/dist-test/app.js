@@ -7,6 +7,7 @@ import { registerGameplayRoutes, } from "./server/gameplay-routes.js";
 import { registerQueryRoutes, } from "./server/query-routes.js";
 import { registerPlayRoutes } from "./server/play-routes.js";
 import { isSameOriginRequest } from "./server/origin.js";
+import { registerBoardRoutes, } from "./server/board-routes.js";
 export function createApp(_environment, dependencies = {}) {
     const app = Fastify({ logger: false });
     registerPlayRoutes(app);
@@ -76,6 +77,9 @@ export function createApp(_environment, dependencies = {}) {
     }
     if (dependencies.queries) {
         registerQueryRoutes(app, dependencies.queries);
+    }
+    if (dependencies.board) {
+        registerBoardRoutes(app, dependencies.board);
     }
     return app;
 }

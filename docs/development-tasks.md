@@ -148,7 +148,7 @@ M1门禁：T01–T08评审通过，可靠交付/任务恢复/失败发布/零副
 ### T13 世界与投影（1日）
 - 依赖：T05/T08；目录：board、platform公共投影机制。
 - 交付：0–100值、变更账本、投影/checkpoint/重建，Player资料与榜单适配经其负责人审查。
-- 当前交付：Board初始tension及六阵营strength均为50；delta按各自0–100边界夹取，PostgreSQL幂等效果账本记录requested/effective/clamp；Query固定结算plan保存tension及参与阵营delta，0013/0014迁移建立Board存储并为既存计划回填。账本重建从初始状态按aggregateVersion重放effective delta，检测缺号/不可能记录并修复projection；领域/adapter测试通过，真实PostgreSQL测试在外层事务中回滚，无持久污染。结算Saga已接入Board端口，但协调器实库用例使用隔离Board替身；checkpoint/定期重建运维接线仍待做，T13不Done。
+- 当前交付：Board初始tension及六阵营strength均为50；delta按各自0–100边界夹取，PostgreSQL幂等效果账本记录requested/effective/clamp；Query固定结算plan保存tension及参与阵营delta，0013/0014迁移建立Board存储并为既存计划回填。账本重建从初始状态按aggregateVersion重放effective delta，检测缺号/不可能记录并修复projection；领域/adapter测试通过，真实PostgreSQL测试在外层事务中回滚，无持久污染。结算Saga已接入Board端口，认证只读GET /board向试玩页提供版本、张力与六阵营强度并定时刷新；协调器实库用例仍使用隔离Board替身，checkpoint/定期重建运维接线仍待做，T13不Done。
 - 验收：重复不变数值、越界拒绝、顺序缺口处理、重建与正常结果一致。
 
 ### T14 试炼状态机与裁决（InProgress；1–2日）

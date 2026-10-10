@@ -20,12 +20,17 @@ import {
 } from "./server/query-routes.ts";
 import { registerPlayRoutes } from "./server/play-routes.ts";
 import { isSameOriginRequest } from "./server/origin.ts";
+import {
+  registerBoardRoutes,
+  type BoardRouteDependencies,
+} from "./server/board-routes.ts";
 
 export interface AppDependencies {
   readonly auth?: AuthRouteDependencies;
   readonly players?: PlayerRouteDependencies;
   readonly gameplay?: GameplayRouteDependencies;
   readonly queries?: QueryRouteDependencies;
+  readonly board?: BoardRouteDependencies;
   readonly checkReadiness?: () => Promise<void>;
 }
 
@@ -111,6 +116,9 @@ export function createApp(
   }
   if (dependencies.queries) {
     registerQueryRoutes(app, dependencies.queries);
+  }
+  if (dependencies.board) {
+    registerBoardRoutes(app, dependencies.board);
   }
 
   return app;

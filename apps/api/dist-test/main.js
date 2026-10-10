@@ -12,6 +12,7 @@ import { createPostgresPool, PostgresUnitOfWork, } from "./platform/database/pos
 import { PostgresQueryCommands } from "./platform/database/query-commands.js";
 import { PostgresQueryRepository } from "./platform/database/query-repository.js";
 import { PostgresBoardCommands } from "./platform/database/board-commands.js";
+import { PostgresBoardViews } from "./platform/database/board-views.js";
 import { QuerySettlementCoordinator } from "./platform/database/query-settlement.js";
 import { PostgresQueryViews } from "./platform/database/query-views.js";
 import { PostgresScriptCommands } from "./platform/database/script-commands.js";
@@ -34,6 +35,7 @@ const scriptCommands = new PostgresScriptCommands(new PostgresScriptRepository(u
 const queryRepository = new PostgresQueryRepository(unitOfWork);
 const queryCommands = new PostgresQueryCommands(queryRepository, commandReceipts, gameplayReleases, cryptoIdGenerator, systemClock, cryptoRandomSource, new PostgresPlayerFactionReader(unitOfWork, playerRepository));
 const boardCommands = new PostgresBoardCommands(unitOfWork, systemClock);
+const boardViews = new PostgresBoardViews(unitOfWork, systemClock);
 const querySettlement = new QuerySettlementCoordinator(queryRepository, queryCommands, boardCommands, playerCommands, scriptCommands, cryptoIdGenerator, (queryId, error) => {
     app.log.error({ err: error, queryId }, "Query settlement recovery failed");
 });
@@ -145,6 +147,17 @@ const app = createApp(environment, {
                 playerId: profile.playerId,
             };
         },
+    },
+    board: {
+        identity,
+        secureCookies,
+        getPlayerActor: async (accountId) => {
+            const profile = await unitOfWork.transaction((transaction) => playerRepository.getByAccountId(transaction, accountId));
+            return profile
+                ? { kind: "player", accountId, playerId: profile.playerId }
+                : null;
+        },
+        views: boardViews,
     },
     checkReadiness: async () => {
         await pool.query("SELECT 1");

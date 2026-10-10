@@ -482,23 +482,72 @@ test(
         ids,
         clock,
       );
-      const coordinator = new QuerySettlementCoordinator(
-        repository,
-        commands,
-        {
-          applyDelta: async (effectId: string) => ({
-            resultReference: `isolated-board-effect:${effectId}`,
-            replayed: false,
-          }),
+      const errors: unknown[] = [];
+      const createCoordinator = (
+        scriptPort: Pick<
+          PostgresScriptCommands,
+          "createQueryCardScript" | "grantKnowledgeEffect"
+        >,
+      ) =>
+        new QuerySettlementCoordinator(
+          repository,
+          commands,
+          {
+            applyDelta: async (effectId: string) => ({
+              resultReference: `isolated-board-effect:${effectId}`,
+              replayed: false,
+            }),
+          },
+          playerCommands,
+          scriptPort,
+          ids,
+          (_failedQueryId, error) => errors.push(error),
+        );
+      let failKnowledgeOnce = true;
+      const interruptedScriptCommands: Pick<
+        PostgresScriptCommands,
+        "createQueryCardScript" | "grantKnowledgeEffect"
+      > = {
+        createQueryCardScript: (...args) =>
+          scriptCommands.createQueryCardScript(...args),
+        grantKnowledgeEffect: async (...args) => {
+          if (failKnowledgeOnce) {
+            failKnowledgeOnce = false;
+            throw new Error("injected Knowledge failure");
+          }
+          return scriptCommands.grantKnowledgeEffect(...args);
         },
-        playerCommands,
-        scriptCommands,
-        ids,
-        (_failedQueryId, error) => {
-          throw error;
-        },
+      };
+
+      assert.equal(
+        await createCoordinator(interruptedScriptCommands).advanceDueSettlements(),
+        0,
       );
-      assert.equal(await coordinator.advanceDueSettlements(), 1);
+      assert.equal(errors.length, 1);
+      assert.equal((await repository.get(roomId))?.phase, "settling");
+      const confirmationsAfterFailure =
+        await repository.getSettlementConfirmations(roomId);
+      assert.equal(confirmationsAfterFailure.length, 1);
+      assert.equal(
+        confirmationsAfterFailure[0]?.effectKey,
+        `board:${roomId}`,
+      );
+      const scriptsAfterFailure = await unitOfWork.transaction((transaction) =>
+        transaction.query<{ cardId: string; playerId: string }>(
+          `SELECT "cardId" AS "cardId", "playerId" AS "playerId"
+           FROM "script"."Scripts" WHERE "queryId" = @queryId;`,
+          { queryId: roomId },
+        ),
+      );
+      assert.deepEqual(scriptsAfterFailure, [
+        { cardId: exploredCardId, playerId: actors[0]!.playerId },
+      ]);
+
+      assert.equal(
+        await createCoordinator(scriptCommands).advanceDueSettlements(),
+        1,
+      );
+      assert.equal(errors.length, 1);
       const completed = await repository.get(roomId);
       assert.equal(completed?.phase, "completed");
       const scripts = await unitOfWork.transaction((transaction) =>

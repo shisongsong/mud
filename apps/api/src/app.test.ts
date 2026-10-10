@@ -32,6 +32,8 @@ test("play page is served same-origin and root redirects to it", async () => {
   assert.match(page.headers["content-type"] ?? "", /text\/html/);
   assert.match(page.body, /有效印记/);
   assert.match(page.body, /\/query\//);
+  assert.match(page.body, /全域态势/);
+  assert.match(page.body, /api\('\/board'\)/);
 
   const root = await app.inject({ method: "GET", url: "/" });
   assert.equal(root.statusCode, 302);
