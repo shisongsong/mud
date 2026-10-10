@@ -1,12 +1,14 @@
 # M0 契约数据字典 v1.0
 
-> 状态：设计已定稿并完成只读复核；不是T02可执行schema或实现证据。数据平台采用Supabase PostgreSQL/Redis；真实连接与迁移尚未验证。[M0决策定稿](m0-decisions.md)规范具体玩法与安全选择，本文件维护接口语义；文件名保留以兼容已有链接。
+> 2026-10-10方向修订：与旧Query试玩流程绑定的Inspect/Vote/裁决、阶段WS/HTTP契约是原型契约，不是动作RPG玩法契约。Identity/安全/幂等/事件信封等平台契约继续参考；Combat输入、快照、事件、角色/物品/任务契约须按[即时合作动作RPG设计](game-direction-action-rpg.md)另行版本化，不能把实时输入伪装为Outbox业务事件。
+
+> 状态：旧玩法设计曾完成只读复核；本文件不是T02可执行schema或新玩法实现证据。数据平台采用Supabase PostgreSQL/Redis；真实连接与迁移尚未验证。[即时合作动作RPG设计](game-direction-action-rpg.md)规范当前玩法，本文件仅保留可复用平台接口语义；文件名保留以兼容已有链接。
 >
 > 来源限制：依据当前基线与用户授权建立新设计，原始v2未逐项核对；不是已证实的旧版差异报告。首发内容与DSL见 [实现规范](mvp-content-and-rules.md)，威胁与验证责任见 [威胁模型](threat-model.md)。
 
 ## 1. 决策状态
 
-P-01至P-12已在 [M0决策定稿](m0-decisions.md)全部决定，不再要求用户逐项审批。旧文无法核实仅限制差异报告，不阻塞当前设计开发。独立设计评审完成；依赖版本/构建/Supabase PostgreSQL真实库故障测试仍未运行；设计批准与实测证据严格分开。
+Identity、安全、幂等、审计和持久化平台决策继续参考 [M0决策定稿](m0-decisions.md)。其中与旧试炼玩法绑定的P项已被[即时合作动作RPG设计](game-direction-action-rpg.md)替代；Combat、Character、Inventory、Mission的接口契约尚未定稿，不得从本字典中的Inspect/Vote DTO推导。独立评审和运行验证状态仅适用于相应旧文/平台部分，不能视为新玩法已评审或已实现。
 
 ### 已采用的安全不变量
 

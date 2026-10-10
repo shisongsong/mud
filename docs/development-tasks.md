@@ -2,13 +2,15 @@
 
 > 以 [baseline.md](../baseline.md) 和 [M0决策定稿](m0-decisions.md)为准；[数据字典](m0-contract-draft.md)供T02生成可执行契约。用户已授权Node切换、npm依赖安装及本地Git初始化；尚未授权数据库写入或部署。安全拦截不得绕过。
 
+> **产品方向重置（2026-10-10）**：[即时合作动作RPG设计](game-direction-action-rpg.md)取代旧文字试炼的玩法假设。下方T14 Query阶段机、T15投票结算及T16–T20旧规则/界面路线是旧原型交付记录，不代表新产品门禁；已完成代码作为原型/平台资产评估复用。暂停扩建旧闭环，先完成实时网络/战斗技术Spike、角色/物品系统边界和新任务内容管线验收；不得把旧HTTP阶段机包装为实时玩法。
+
 ## 1. 执行与完成定义
 
 协调者一次分配一个Ready任务，提供任务ID、允许目录、前置交付与契约版本。默认依赖Done且适用契约冻结才能Ready；仅允许本文件明文记录的门禁例外。
 
 状态：Backlog → Ready → InProgress → Review → Done；歧义/权限/环境/依赖问题转Blocked。实现Agent不能把未评审或未验证任务标Done。
 
-当前：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案、积分账本和结算效果适配已落，真实Saga集成待验）；T11 InProgress（Script/Knowledge持久化已接入结算Saga，真实Saga集成待验）；T13 InProgress（Board值域、幂等效果账本、Query结算delta及账本重建已落，checkpoint/运维恢复仍待验）；T14 InProgress（Query创建/加入/退出/探索/投票、完成结果投影及phase维护已落，加入竞争故障恢复和四玩家E2E仍待验）；T15 InProgress（持久目标确认与前向恢复协调器及真实组件集成已落，worker崩溃恢复待验）。旧文差异无法核实不再阻塞新设计。
+旧文字试炼路线状态快照（非新产品进度）：T00 Done（独立只读文档复核未发现阻断，不代表实现验证）；T01 Done（Node 24.10、依赖锁定、格式/边界/类型/构建/测试均通过；Supabase实际连通和事务语义归T03验证）；T02 InProgress；T03 InProgress（PostgreSQL schema及适配器首批已落，Identity/Player/release迁移待授权应用）；T04 InProgress（PostgreSQL UnitOfWork/receipt实现已切换，真实竞争语义待验）；T09 InProgress（账号、会话、Argon2id、Auth HTTP首批已落，管理MFA及安全验证未完成）；T10 InProgress（单账号Player档案、积分账本和结算效果适配已落，真实Saga集成待验）；T11 InProgress（Script/Knowledge持久化已接入结算Saga，真实Saga集成待验）；T13 InProgress（Board值域、幂等效果账本、Query结算delta及账本重建已落，checkpoint/运维恢复仍待验）；T14 InProgress（Query创建/加入/退出/探索/投票、完成结果投影及phase维护已落，加入竞争故障恢复和四玩家E2E仍待验）；T15 InProgress（持久目标确认与前向恢复协调器及真实组件集成已落，worker崩溃恢复待验）。这些状态描述旧原型及平台实现，不代表动作RPG进度。
 
 实现任务含代码、适用单元/集成测试、错误处理、可观测性和文档；不允许TODO、固定成功值或mock代替验收。T00为设计任务，只需独立文档评审，不要求不存在的代码/数据库测试；兼容性实测归T01、故障实测归T03–T08及后续任务。验证责任不能以“未实测”永久阻塞设计定稿。
 
